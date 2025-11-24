@@ -13,6 +13,7 @@ class User(Base):
     plan = Column(String(50), default="starter")  # starter, professional, enterprise
     order_id = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -27,10 +28,16 @@ class Study(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     category = Column(String(100), nullable=True)
-    questionpro_url = Column(String(500), nullable=True)
-    is_premium = Column(Boolean, default=False)
+    duration = Column(String(50), nullable=True)  # Ex: "15-20 min"
+    deadline = Column(String(100), nullable=True)  # Ex: "28 Février 2024"
+    status = Column(String(50), default="Ouvert")  # Ouvert, Fermé, Bientôt
+    icon = Column(String(50), default="users")  # users, trending, chart, file
+    embed_url_particulier = Column(String(500), nullable=True)  # URL iframe sondage particulier
+    embed_url_entreprise = Column(String(500), nullable=True)  # URL iframe sondage entreprise
+    embed_url_results = Column(String(500), nullable=True)  # URL iframe résultats (dashboard)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     def __repr__(self):
         return f"<Study {self.title}>"

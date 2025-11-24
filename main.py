@@ -2,14 +2,14 @@ from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
 import secrets
 import os
 from datetime import datetime, timedelta
 
 from database import get_db, engine
-from models import Base, User
-from auth import hash_password, verify_password, create_access_token
+from models import Base, User, Study
+from auth import hash_password, verify_password, create_access_token, decode_access_token
 
 # Créer les tables
 Base.metadata.create_all(bind=engine)
@@ -24,10 +24,13 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://afrikalytics.com",
+        "https://www.afrikalytics.com",
         "https://afrikalytics-website.vercel.app",
         "https://dashboard.afrikalytics.com",
+        "https://afrikalytics-dashboard.vercel.app",
         "http://localhost:3000",
-        "*"  # Pour le développement
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -62,6 +65,56 @@ class TokenResponse(BaseModel):
     token_type: str
     user: UserResponse
 
+class StudyCreate(BaseModel):
+    title: str
+    description: str
+    category: str
+    duration: Optional[str] = "15-20 min"
+    deadline: Optional[str] = None
+    status: Optional[str] = "Ouvert"
+    icon: Optional[str] = "users"
+    embed_url_particulier: Optional[str] = None
+    embed_url_entreprise: Optional[str] = None
+    embed_url_results: Optional[str] = None
+    is_active: Optional[bool] = True
+
+class StudyResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str]
+    category: Optional[str]
+    duration: Optional[str]
+    deadline: Optional[str]
+    status: Optional[str]
+    icon: Optional[str]
+    embed_url_particulier: Optional[str]
+    embed_url_entreprise: Optional[str]
+    embed_url_results: Optional[str]
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# ==================== HELPERS ====================
+
+def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token manquant")
+    
+    token = authorization.replace("Bearer ", "")
+    payload = decode_access_token(token)
+    
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token invalide")
+    
+    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    return user
+
 # ==================== ROUTES ====================
 
 @app.get("/")
@@ -79,7 +132,6 @@ def health_check():
 
 
 # ==================== ZAPIER WEBHOOK ====================
-# Cette route est appelée par Zapier après un paiement WooCommerce
 
 ZAPIER_SECRET = os.getenv("ZAPIER_SECRET", "your-secret-key-here")
 
@@ -92,15 +144,12 @@ async def create_user_from_zapier(
     """
     Créer un utilisateur après paiement WooCommerce (appelé par Zapier)
     """
-    # Vérifier le secret Zapier (optionnel en dev)
     if os.getenv("ENVIRONMENT") == "production":
         if x_zapier_secret != ZAPIER_SECRET:
             raise HTTPException(status_code=401, detail="Unauthorized")
     
-    # Vérifier si l'utilisateur existe déjà
     existing_user = db.query(User).filter(User.email == data.email).first()
     if existing_user:
-        # Mettre à jour le plan si l'utilisateur existe
         existing_user.plan = data.plan
         existing_user.is_active = True
         db.commit()
@@ -111,11 +160,9 @@ async def create_user_from_zapier(
             "dashboard_url": "https://dashboard.afrikalytics.com"
         }
     
-    # Générer un mot de passe temporaire
     temp_password = secrets.token_urlsafe(12)
     hashed_password = hash_password(temp_password)
     
-    # Créer le nouvel utilisateur
     new_user = User(
         email=data.email,
         full_name=data.name,
@@ -133,7 +180,7 @@ async def create_user_from_zapier(
         "message": "User created successfully",
         "user_id": new_user.id,
         "email": new_user.email,
-        "temp_password": temp_password,  # À envoyer par email via Zapier
+        "temp_password": temp_password,
         "dashboard_url": "https://dashboard.afrikalytics.com"
     }
 
@@ -142,9 +189,6 @@ async def create_user_from_zapier(
 
 @app.post("/api/auth/login", response_model=TokenResponse)
 async def login(data: UserLogin, db: Session = Depends(get_db)):
-    """
-    Connexion utilisateur
-    """
     user = db.query(User).filter(User.email == data.email).first()
     
     if not user or not verify_password(data.password, user.hashed_password):
@@ -153,7 +197,6 @@ async def login(data: UserLogin, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
     
-    # Créer le token JWT
     access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
     
     return {
@@ -164,39 +207,126 @@ async def login(data: UserLogin, db: Session = Depends(get_db)):
 
 
 @app.get("/api/users/me", response_model=UserResponse)
-async def get_current_user(
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+# ==================== ÉTUDES (CRUD) ====================
+
+@app.get("/api/studies", response_model=List[StudyResponse])
+async def get_all_studies(db: Session = Depends(get_db)):
+    """
+    Récupérer toutes les études
+    """
+    studies = db.query(Study).order_by(Study.created_at.desc()).all()
+    return studies
+
+
+@app.get("/api/studies/active", response_model=List[StudyResponse])
+async def get_active_studies(db: Session = Depends(get_db)):
+    """
+    Récupérer les études actives (pour le site public)
+    """
+    studies = db.query(Study).filter(Study.is_active == True).order_by(Study.created_at.desc()).all()
+    return studies
+
+
+@app.get("/api/studies/{study_id}", response_model=StudyResponse)
+async def get_study(study_id: int, db: Session = Depends(get_db)):
+    """
+    Récupérer une étude par son ID
+    """
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Étude non trouvée")
+    return study
+
+
+@app.post("/api/studies", response_model=StudyResponse)
+async def create_study(
+    data: StudyCreate,
     db: Session = Depends(get_db),
-    authorization: str = Header(None)
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Récupérer les infos de l'utilisateur connecté
+    Créer une nouvelle étude (Admin seulement)
     """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token manquant")
+    new_study = Study(
+        title=data.title,
+        description=data.description,
+        category=data.category,
+        duration=data.duration,
+        deadline=data.deadline,
+        status=data.status,
+        icon=data.icon,
+        embed_url_particulier=data.embed_url_particulier,
+        embed_url_entreprise=data.embed_url_entreprise,
+        embed_url_results=data.embed_url_results,
+        is_active=data.is_active
+    )
     
-    token = authorization.replace("Bearer ", "")
+    db.add(new_study)
+    db.commit()
+    db.refresh(new_study)
     
-    from auth import decode_access_token
-    payload = decode_access_token(token)
+    return new_study
+
+
+@app.put("/api/studies/{study_id}", response_model=StudyResponse)
+async def update_study(
+    study_id: int,
+    data: StudyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Modifier une étude (Admin seulement)
+    """
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Étude non trouvée")
     
-    if not payload:
-        raise HTTPException(status_code=401, detail="Token invalide")
+    study.title = data.title
+    study.description = data.description
+    study.category = data.category
+    study.duration = data.duration
+    study.deadline = data.deadline
+    study.status = data.status
+    study.icon = data.icon
+    study.embed_url_particulier = data.embed_url_particulier
+    study.embed_url_entreprise = data.embed_url_entreprise
+    study.embed_url_results = data.embed_url_results
+    study.is_active = data.is_active
     
-    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    db.commit()
+    db.refresh(study)
     
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    return study
+
+
+@app.delete("/api/studies/{study_id}")
+async def delete_study(
+    study_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer une étude (Admin seulement)
+    """
+    study = db.query(Study).filter(Study.id == study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Étude non trouvée")
     
-    return user
+    db.delete(study)
+    db.commit()
+    
+    return {"message": "Étude supprimée avec succès"}
 
 
 # ==================== GESTION DES UTILISATEURS ====================
 
 @app.get("/api/users/{user_id}", response_model=UserResponse)
 async def get_user(user_id: int, db: Session = Depends(get_db)):
-    """
-    Récupérer un utilisateur par son ID
-    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
@@ -209,9 +339,6 @@ async def deactivate_user(
     db: Session = Depends(get_db),
     x_zapier_secret: Optional[str] = Header(None)
 ):
-    """
-    Désactiver un utilisateur (appelé par Zapier si paiement échoué)
-    """
     if os.getenv("ENVIRONMENT") == "production":
         if x_zapier_secret != ZAPIER_SECRET:
             raise HTTPException(status_code=401, detail="Unauthorized")
