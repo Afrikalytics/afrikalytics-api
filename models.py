@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey
 from sqlalchemy.sql import func
 from database import Base
 
@@ -57,3 +57,40 @@ class Subscription(Base):
 
     def __repr__(self):
         return f"<Subscription {self.user_id} - {self.plan}>"
+
+
+class Insight(Base):
+    __tablename__ = "insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    study_id = Column(Integer, ForeignKey("studies.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    summary = Column(Text, nullable=False)
+    key_findings = Column(Text, nullable=True)
+    recommendations = Column(Text, nullable=True)
+    author = Column(String(255), nullable=True)
+    is_published = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<Insight {self.title}>"
+
+
+class Report(Base):
+    __tablename__ = "reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    study_id = Column(Integer, ForeignKey("studies.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    file_url = Column(String(500), nullable=False)
+    file_name = Column(String(255), nullable=True)
+    file_size = Column(String(50), nullable=True)
+    download_count = Column(Integer, default=0)
+    is_available = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<Report {self.title}>"

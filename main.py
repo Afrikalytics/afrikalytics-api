@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 
 from database import get_db, engine
-from models import Base, User, Study
+from models import Base, User, Study, Insight, Report
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 
 # Créer les tables
@@ -91,6 +91,53 @@ class StudyResponse(BaseModel):
     embed_url_entreprise: Optional[str]
     embed_url_results: Optional[str]
     is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class InsightCreate(BaseModel):
+    study_id: int
+    title: str
+    summary: str
+    key_findings: Optional[str] = None
+    recommendations: Optional[str] = None
+    author: Optional[str] = None
+    is_published: Optional[bool] = False
+
+class InsightResponse(BaseModel):
+    id: int
+    study_id: int
+    title: str
+    summary: str
+    key_findings: Optional[str]
+    recommendations: Optional[str]
+    author: Optional[str]
+    is_published: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ReportCreate(BaseModel):
+    study_id: int
+    title: str
+    description: Optional[str] = None
+    file_url: str
+    file_name: Optional[str] = None
+    file_size: Optional[str] = None
+    is_available: Optional[bool] = False
+
+class ReportResponse(BaseModel):
+    id: int
+    study_id: int
+    title: str
+    description: Optional[str]
+    file_url: str
+    file_name: Optional[str]
+    file_size: Optional[str]
+    download_count: int
+    is_available: bool
     created_at: datetime
 
     class Config:
@@ -351,6 +398,271 @@ async def deactivate_user(
     db.commit()
     
     return {"message": "Utilisateur désactivé", "user_id": user_id}
+
+
+# ==================== ROUTES INSIGHTS ====================
+
+@app.get("/api/insights", response_model=List[InsightResponse])
+async def get_all_insights(db: Session = Depends(get_db)):
+    """
+    Récupérer tous les insights publiés
+    """
+    insights = db.query(Insight).filter(Insight.is_published == True).order_by(Insight.created_at.desc()).all()
+    return insights
+
+
+@app.get("/api/insights/study/{study_id}", response_model=List[InsightResponse])
+async def get_insights_by_study(study_id: int, db: Session = Depends(get_db)):
+    """
+    Récupérer les insights d'une étude spécifique
+    """
+    insights = db.query(Insight).filter(
+        Insight.study_id == study_id,
+        Insight.is_published == True
+    ).order_by(Insight.created_at.desc()).all()
+    return insights
+
+
+@app.get("/api/insights/{insight_id}", response_model=InsightResponse)
+async def get_insight(insight_id: int, db: Session = Depends(get_db)):
+    """
+    Récupérer un insight par son ID
+    """
+    insight = db.query(Insight).filter(Insight.id == insight_id).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="Insight non trouvé")
+    return insight
+
+
+@app.post("/api/insights", response_model=InsightResponse)
+async def create_insight(
+    data: InsightCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Créer un nouvel insight (Admin seulement)
+    """
+    # Vérifier que l'étude existe
+    study = db.query(Study).filter(Study.id == data.study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Étude non trouvée")
+    
+    # Créer l'insight
+    new_insight = Insight(
+        study_id=data.study_id,
+        title=data.title,
+        summary=data.summary,
+        key_findings=data.key_findings,
+        recommendations=data.recommendations,
+        author=data.author or current_user.full_name,
+        is_published=data.is_published
+    )
+    
+    db.add(new_insight)
+    db.commit()
+    db.refresh(new_insight)
+    
+    return new_insight
+
+
+@app.put("/api/insights/{insight_id}", response_model=InsightResponse)
+async def update_insight(
+    insight_id: int,
+    data: InsightCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Modifier un insight (Admin seulement)
+    """
+    insight = db.query(Insight).filter(Insight.id == insight_id).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="Insight non trouvé")
+    
+    insight.study_id = data.study_id
+    insight.title = data.title
+    insight.summary = data.summary
+    insight.key_findings = data.key_findings
+    insight.recommendations = data.recommendations
+    insight.author = data.author
+    insight.is_published = data.is_published
+    
+    db.commit()
+    db.refresh(insight)
+    
+    return insight
+
+
+@app.delete("/api/insights/{insight_id}")
+async def delete_insight(
+    insight_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer un insight (Admin seulement)
+    """
+    insight = db.query(Insight).filter(Insight.id == insight_id).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="Insight non trouvé")
+    
+    db.delete(insight)
+    db.commit()
+    
+    return {"message": "Insight supprimé avec succès"}
+
+
+@app.get("/api/stats/insights-count")
+async def get_insights_count(db: Session = Depends(get_db)):
+    """
+    Compter le nombre d'insights publiés (pour le dashboard)
+    """
+    count = db.query(Insight).filter(Insight.is_published == True).count()
+    return {"count": count}
+
+
+# ==================== ROUTES REPORTS ====================
+
+@app.get("/api/reports", response_model=List[ReportResponse])
+async def get_all_reports(db: Session = Depends(get_db)):
+    """
+    Récupérer tous les rapports disponibles
+    """
+    reports = db.query(Report).filter(Report.is_available == True).order_by(Report.created_at.desc()).all()
+    return reports
+
+
+@app.get("/api/reports/study/{study_id}", response_model=ReportResponse)
+async def get_report_by_study(study_id: int, db: Session = Depends(get_db)):
+    """
+    Récupérer le rapport d'une étude spécifique
+    """
+    report = db.query(Report).filter(
+        Report.study_id == study_id,
+        Report.is_available == True
+    ).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    return report
+
+
+@app.get("/api/reports/{report_id}", response_model=ReportResponse)
+async def get_report(report_id: int, db: Session = Depends(get_db)):
+    """
+    Récupérer un rapport par son ID
+    """
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    return report
+
+
+@app.post("/api/reports", response_model=ReportResponse)
+async def create_report(
+    data: ReportCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Créer un nouveau rapport (Admin seulement)
+    """
+    # Vérifier que l'étude existe
+    study = db.query(Study).filter(Study.id == data.study_id).first()
+    if not study:
+        raise HTTPException(status_code=404, detail="Étude non trouvée")
+    
+    # Créer le rapport
+    new_report = Report(
+        study_id=data.study_id,
+        title=data.title,
+        description=data.description,
+        file_url=data.file_url,
+        file_name=data.file_name,
+        file_size=data.file_size,
+        is_available=data.is_available
+    )
+    
+    db.add(new_report)
+    db.commit()
+    db.refresh(new_report)
+    
+    return new_report
+
+
+@app.put("/api/reports/{report_id}", response_model=ReportResponse)
+async def update_report(
+    report_id: int,
+    data: ReportCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Modifier un rapport (Admin seulement)
+    """
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    
+    report.study_id = data.study_id
+    report.title = data.title
+    report.description = data.description
+    report.file_url = data.file_url
+    report.file_name = data.file_name
+    report.file_size = data.file_size
+    report.is_available = data.is_available
+    
+    db.commit()
+    db.refresh(report)
+    
+    return report
+
+
+@app.delete("/api/reports/{report_id}")
+async def delete_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer un rapport (Admin seulement)
+    """
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    
+    db.delete(report)
+    db.commit()
+    
+    return {"message": "Rapport supprimé avec succès"}
+
+
+@app.post("/api/reports/{report_id}/download")
+async def track_download(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Incrémenter le compteur de téléchargements
+    """
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    
+    report.download_count += 1
+    db.commit()
+    
+    return {"message": "Téléchargement enregistré", "download_count": report.download_count}
+
+
+@app.get("/api/stats/reports-count")
+async def get_reports_count(db: Session = Depends(get_db)):
+    """
+    Compter le nombre de rapports disponibles (pour le dashboard)
+    """
+    count = db.query(Report).filter(Report.is_available == True).count()
+    return {"count": count}
 
 
 if __name__ == "__main__":
