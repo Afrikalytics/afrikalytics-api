@@ -50,6 +50,11 @@ class UserCreate(BaseModel):
     plan: str
     order_id: str
 
+class UserRegister(BaseModel):
+    email: EmailStr
+    name: str
+    password: str
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
@@ -256,6 +261,73 @@ async def create_user_from_zapier(
 
 
 # ==================== AUTHENTIFICATION ====================
+
+@app.post("/api/auth/register", response_model=TokenResponse)
+async def register(data: UserRegister, db: Session = Depends(get_db)):
+    """
+    Inscription d'un nouvel utilisateur (plan Basic gratuit)
+    """
+    # Vérifier si l'email existe déjà
+    existing_user = db.query(User).filter(User.email == data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+    
+    # Valider le mot de passe
+    if len(data.password) < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 8 caractères")
+    
+    # Créer l'utilisateur
+    hashed_password = hash_password(data.password)
+    
+    new_user = User(
+        email=data.email,
+        full_name=data.name,
+        hashed_password=hashed_password,
+        plan="basic",
+        is_active=True
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Créer le token
+    access_token = create_access_token(data={"sub": new_user.email, "user_id": new_user.id})
+    
+    # Envoyer email de bienvenue (optionnel)
+    try:
+        resend.emails.send({
+            "from": "Afrikalytics <noreply@notifications.afrikalytics.com>",
+            "to": [new_user.email],
+            "subject": "Bienvenue sur Afrikalytics AI !",
+            "html": f"""
+                <h2>Bienvenue {new_user.full_name} !</h2>
+                <p>Votre compte Afrikalytics a été créé avec succès.</p>
+                <p><strong>Plan :</strong> Basic (Gratuit)</p>
+                <hr>
+                <p>Avec votre compte Basic, vous pouvez :</p>
+                <ul>
+                    <li>✅ Participer à toutes nos études</li>
+                    <li>✅ Voir un aperçu des insights</li>
+                    <li>✅ Accéder au dashboard basic</li>
+                </ul>
+                <p>Pour accéder aux résultats complets, insights détaillés et rapports PDF, passez à <strong>Premium</strong> !</p>
+                <hr>
+                <p><a href="https://dashboard.afrikalytics.com">Accéder à mon dashboard →</a></p>
+                <p><a href="https://afrikalytics.com/premium">Découvrir les offres Premium →</a></p>
+                <hr>
+                <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+            """
+        })
+    except Exception as e:
+        print(f"Erreur envoi email bienvenue: {e}")
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": new_user
+    }
+
 
 @app.post("/api/auth/login", response_model=TokenResponse)
 async def login(data: UserLogin, db: Session = Depends(get_db)):
