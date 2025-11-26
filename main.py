@@ -6,13 +6,18 @@ from typing import Optional, List
 import secrets
 import os
 from datetime import datetime, timedelta
+import resend
 
 from database import get_db, engine
-from models import Base, User, Study, Insight, Report
+from models import Base, User, Study, Insight, Report, Contact
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 
 # Créer les tables
 Base.metadata.create_all(bind=engine)
+
+# Configurer Resend
+resend.api_key = os.getenv("RESEND_API_KEY")
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "contact@afrikalytics.com")
 
 app = FastAPI(
     title="Afrikalytics API",
@@ -99,7 +104,7 @@ class StudyResponse(BaseModel):
 class InsightCreate(BaseModel):
     study_id: int
     title: str
-    summary: str
+    summary: Optional[str] = None
     key_findings: Optional[str] = None
     recommendations: Optional[str] = None
     author: Optional[str] = None
@@ -109,7 +114,7 @@ class InsightResponse(BaseModel):
     id: int
     study_id: int
     title: str
-    summary: str
+    summary: Optional[str]
     key_findings: Optional[str]
     recommendations: Optional[str]
     author: Optional[str]
@@ -126,7 +131,7 @@ class ReportCreate(BaseModel):
     file_url: str
     file_name: Optional[str] = None
     file_size: Optional[str] = None
-    is_available: Optional[bool] = False
+    is_available: Optional[bool] = True
 
 class ReportResponse(BaseModel):
     id: int
@@ -138,6 +143,24 @@ class ReportResponse(BaseModel):
     file_size: Optional[str]
     download_count: int
     is_available: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ContactCreate(BaseModel):
+    name: str
+    email: EmailStr
+    company: Optional[str] = None
+    message: str
+
+class ContactResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    company: Optional[str]
+    message: str
+    is_read: bool
     created_at: datetime
 
     class Config:
@@ -370,37 +393,7 @@ async def delete_study(
     return {"message": "Étude supprimée avec succès"}
 
 
-# ==================== GESTION DES UTILISATEURS ====================
-
-@app.get("/api/users/{user_id}", response_model=UserResponse)
-async def get_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
-    return user
-
-
-@app.put("/api/users/{user_id}/deactivate")
-async def deactivate_user(
-    user_id: int,
-    db: Session = Depends(get_db),
-    x_zapier_secret: Optional[str] = Header(None)
-):
-    if os.getenv("ENVIRONMENT") == "production":
-        if x_zapier_secret != ZAPIER_SECRET:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
-    
-    user.is_active = False
-    db.commit()
-    
-    return {"message": "Utilisateur désactivé", "user_id": user_id}
-
-
-# ==================== ROUTES INSIGHTS ====================
+# ==================== INSIGHTS (CRUD) ====================
 
 @app.get("/api/insights", response_model=List[InsightResponse])
 async def get_all_insights(db: Session = Depends(get_db)):
@@ -411,16 +404,15 @@ async def get_all_insights(db: Session = Depends(get_db)):
     return insights
 
 
-@app.get("/api/insights/study/{study_id}", response_model=List[InsightResponse])
-async def get_insights_by_study(study_id: int, db: Session = Depends(get_db)):
+@app.get("/api/insights/study/{study_id}", response_model=InsightResponse)
+async def get_insight_by_study(study_id: int, db: Session = Depends(get_db)):
     """
-    Récupérer les insights d'une étude spécifique
+    Récupérer l'insight d'une étude
     """
-    insights = db.query(Insight).filter(
-        Insight.study_id == study_id,
-        Insight.is_published == True
-    ).order_by(Insight.created_at.desc()).all()
-    return insights
+    insight = db.query(Insight).filter(Insight.study_id == study_id, Insight.is_published == True).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="Insight non trouvé")
+    return insight
 
 
 @app.get("/api/insights/{insight_id}", response_model=InsightResponse)
@@ -443,19 +435,13 @@ async def create_insight(
     """
     Créer un nouvel insight (Admin seulement)
     """
-    # Vérifier que l'étude existe
-    study = db.query(Study).filter(Study.id == data.study_id).first()
-    if not study:
-        raise HTTPException(status_code=404, detail="Étude non trouvée")
-    
-    # Créer l'insight
     new_insight = Insight(
         study_id=data.study_id,
         title=data.title,
         summary=data.summary,
         key_findings=data.key_findings,
         recommendations=data.recommendations,
-        author=data.author or current_user.full_name,
+        author=data.author,
         is_published=data.is_published
     )
     
@@ -513,16 +499,7 @@ async def delete_insight(
     return {"message": "Insight supprimé avec succès"}
 
 
-@app.get("/api/stats/insights-count")
-async def get_insights_count(db: Session = Depends(get_db)):
-    """
-    Compter le nombre d'insights publiés (pour le dashboard)
-    """
-    count = db.query(Insight).filter(Insight.is_published == True).count()
-    return {"count": count}
-
-
-# ==================== ROUTES REPORTS ====================
+# ==================== REPORTS (CRUD) ====================
 
 @app.get("/api/reports", response_model=List[ReportResponse])
 async def get_all_reports(db: Session = Depends(get_db)):
@@ -536,12 +513,9 @@ async def get_all_reports(db: Session = Depends(get_db)):
 @app.get("/api/reports/study/{study_id}", response_model=ReportResponse)
 async def get_report_by_study(study_id: int, db: Session = Depends(get_db)):
     """
-    Récupérer le rapport d'une étude spécifique
+    Récupérer le rapport d'une étude
     """
-    report = db.query(Report).filter(
-        Report.study_id == study_id,
-        Report.is_available == True
-    ).first()
+    report = db.query(Report).filter(Report.study_id == study_id, Report.is_available == True).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
     return report
@@ -567,12 +541,6 @@ async def create_report(
     """
     Créer un nouveau rapport (Admin seulement)
     """
-    # Vérifier que l'étude existe
-    study = db.query(Study).filter(Study.id == data.study_id).first()
-    if not study:
-        raise HTTPException(status_code=404, detail="Étude non trouvée")
-    
-    # Créer le rapport
     new_report = Report(
         study_id=data.study_id,
         title=data.title,
@@ -640,8 +608,7 @@ async def delete_report(
 @app.post("/api/reports/{report_id}/download")
 async def track_download(
     report_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db)
 ):
     """
     Incrémenter le compteur de téléchargements
@@ -656,13 +623,131 @@ async def track_download(
     return {"message": "Téléchargement enregistré", "download_count": report.download_count}
 
 
-@app.get("/api/stats/reports-count")
-async def get_reports_count(db: Session = Depends(get_db)):
+# ==================== CONTACTS ====================
+
+@app.post("/api/contacts", response_model=ContactResponse)
+async def create_contact(
+    data: ContactCreate,
+    db: Session = Depends(get_db)
+):
     """
-    Compter le nombre de rapports disponibles (pour le dashboard)
+    Créer un nouveau message de contact (public)
     """
-    count = db.query(Report).filter(Report.is_available == True).count()
-    return {"count": count}
+    # Sauvegarder en base de données
+    new_contact = Contact(
+        name=data.name,
+        email=data.email,
+        company=data.company,
+        message=data.message
+    )
+    
+    db.add(new_contact)
+    db.commit()
+    db.refresh(new_contact)
+    
+    # Envoyer email de notification
+    try:
+        resend.emails.send({
+            "from": "Afrikalytics <noreply@notifications.afrikalytics.com>",
+            "to": [CONTACT_EMAIL],
+            "subject": f"Nouveau message de contact - {data.name}",
+            "html": f"""
+                <h2>Nouveau message de contact</h2>
+                <p><strong>Nom :</strong> {data.name}</p>
+                <p><strong>Email :</strong> {data.email}</p>
+                <p><strong>Entreprise :</strong> {data.company or 'Non renseigné'}</p>
+                <hr>
+                <p><strong>Message :</strong></p>
+                <p>{data.message}</p>
+                <hr>
+                <p><em>Message envoyé depuis le formulaire de contact Afrikalytics</em></p>
+            """
+        })
+    except Exception as e:
+        # Log l'erreur mais ne pas bloquer la requête
+        print(f"Erreur envoi email: {e}")
+    
+    return new_contact
+
+
+@app.get("/api/contacts", response_model=List[ContactResponse])
+async def get_all_contacts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer tous les messages de contact (Admin seulement)
+    """
+    contacts = db.query(Contact).order_by(Contact.created_at.desc()).all()
+    return contacts
+
+
+@app.put("/api/contacts/{contact_id}/read")
+async def mark_contact_as_read(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Marquer un message comme lu (Admin seulement)
+    """
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact non trouvé")
+    
+    contact.is_read = True
+    db.commit()
+    
+    return {"message": "Contact marqué comme lu"}
+
+
+@app.delete("/api/contacts/{contact_id}")
+async def delete_contact(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer un message de contact (Admin seulement)
+    """
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact non trouvé")
+    
+    db.delete(contact)
+    db.commit()
+    
+    return {"message": "Contact supprimé avec succès"}
+
+
+# ==================== GESTION DES UTILISATEURS ====================
+
+@app.get("/api/users/{user_id}", response_model=UserResponse)
+async def get_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    return user
+
+
+@app.put("/api/users/{user_id}/deactivate")
+async def deactivate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    x_zapier_secret: Optional[str] = Header(None)
+):
+    if os.getenv("ENVIRONMENT") == "production":
+        if x_zapier_secret != ZAPIER_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    user.is_active = False
+    db.commit()
+    
+    return {"message": "Utilisateur désactivé", "user_id": user_id}
 
 
 if __name__ == "__main__":
