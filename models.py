@@ -35,6 +35,8 @@ class Study(Base):
     embed_url_particulier = Column(String(500), nullable=True)  # URL iframe sondage particulier
     embed_url_entreprise = Column(String(500), nullable=True)  # URL iframe sondage entreprise
     embed_url_results = Column(String(500), nullable=True)  # URL iframe résultats (dashboard)
+    report_url_basic = Column(String(500), nullable=True)  # URL rapport PDF Basic
+    report_url_premium = Column(String(500), nullable=True)  # URL rapport PDF Premium
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

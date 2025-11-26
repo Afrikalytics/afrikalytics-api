@@ -86,6 +86,8 @@ class StudyCreate(BaseModel):
     embed_url_particulier: Optional[str] = None
     embed_url_entreprise: Optional[str] = None
     embed_url_results: Optional[str] = None
+    report_url_basic: Optional[str] = None
+    report_url_premium: Optional[str] = None
     is_active: Optional[bool] = True
 
 class StudyResponse(BaseModel):
@@ -100,6 +102,8 @@ class StudyResponse(BaseModel):
     embed_url_particulier: Optional[str]
     embed_url_entreprise: Optional[str]
     embed_url_results: Optional[str]
+    report_url_basic: Optional[str]
+    report_url_premium: Optional[str]
     is_active: bool
     created_at: datetime
 
@@ -404,6 +408,8 @@ async def create_study(
         embed_url_particulier=data.embed_url_particulier,
         embed_url_entreprise=data.embed_url_entreprise,
         embed_url_results=data.embed_url_results,
+        report_url_basic=data.report_url_basic,
+        report_url_premium=data.report_url_premium,
         is_active=data.is_active
     )
     
@@ -438,6 +444,8 @@ async def update_study(
     study.embed_url_particulier = data.embed_url_particulier
     study.embed_url_entreprise = data.embed_url_entreprise
     study.embed_url_results = data.embed_url_results
+    study.report_url_basic = data.report_url_basic
+    study.report_url_premium = data.report_url_premium
     study.is_active = data.is_active
     
     db.commit()
