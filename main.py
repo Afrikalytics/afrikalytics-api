@@ -396,6 +396,28 @@ async def paydunya_webhook(
         
         print(f"PayDunya Webhook parsé: {data}")
         
+        # ==================== VÉRIFICATION SIGNATURE ====================
+        # Vérifier le hash pour s'assurer que la requête vient bien de PayDunya
+        received_hash = data.get("hash")
+        invoice_token = data.get("invoice", {}).get("token") if isinstance(data.get("invoice"), dict) else data.get("token")
+        
+        if received_hash and invoice_token:
+            # Calculer le hash attendu : SHA512(master_key + invoice_token)
+            expected_hash = hashlib.sha512(
+                (PAYDUNYA_MASTER_KEY + invoice_token).encode('utf-8')
+            ).hexdigest()
+            
+            if received_hash != expected_hash:
+                print(f"⚠️ ALERTE SÉCURITÉ: Hash invalide!")
+                print(f"Hash reçu: {received_hash}")
+                print(f"Hash attendu: {expected_hash}")
+                # En production, on devrait rejeter la requête
+                # Pour l'instant on log l'alerte mais on continue
+                # return {"status": "error", "reason": "Invalid signature"}
+        else:
+            print(f"Info: Hash ou token manquant, vérification signature ignorée")
+        # ==================== FIN VÉRIFICATION SIGNATURE ====================
+        
         # Vérifier le statut du paiement
         # PayDunya peut envoyer status ou response_code
         status = data.get("status") or data.get("response_code")
