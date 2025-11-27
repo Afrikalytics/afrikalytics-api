@@ -11,7 +11,7 @@ import hashlib
 import hmac
 
 from database import get_db, engine
-from models import Base, User, Study, Insight, Report, Contact
+from models import Base, User, Study, Insight, Report, Contact, Subscription
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 
 # Créer les tables
@@ -190,6 +190,10 @@ class PaymentCreate(BaseModel):
     email: EmailStr
     name: str
     plan: str = "professionnel"
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
 
 # ==================== HELPERS ====================
 
@@ -453,6 +457,31 @@ async def paydunya_webhook(
             existing_user.is_active = True
             db.commit()
             
+            # Créer ou mettre à jour la subscription
+            existing_subscription = db.query(Subscription).filter(
+                Subscription.user_id == existing_user.id,
+                Subscription.status == "active"
+            ).first()
+            
+            if existing_subscription:
+                # Renouveler l'abonnement existant
+                existing_subscription.plan = plan
+                existing_subscription.start_date = datetime.utcnow()
+                existing_subscription.end_date = datetime.utcnow() + timedelta(days=30)
+                existing_subscription.status = "active"
+            else:
+                # Créer une nouvelle subscription
+                new_subscription = Subscription(
+                    user_id=existing_user.id,
+                    plan=plan,
+                    status="active",
+                    start_date=datetime.utcnow(),
+                    end_date=datetime.utcnow() + timedelta(days=30)
+                )
+                db.add(new_subscription)
+            
+            db.commit()
+            
             # Envoyer email de confirmation upgrade
             send_email(
                 to=email,
@@ -494,6 +523,17 @@ async def paydunya_webhook(
             db.add(new_user)
             db.commit()
             db.refresh(new_user)
+            
+            # Créer la subscription
+            new_subscription = Subscription(
+                user_id=new_user.id,
+                plan=plan,
+                status="active",
+                start_date=datetime.utcnow(),
+                end_date=datetime.utcnow() + timedelta(days=30)
+            )
+            db.add(new_subscription)
+            db.commit()
             
             # Envoyer email avec identifiants
             send_email(
@@ -1212,6 +1252,44 @@ async def deactivate_user(
     db.commit()
     
     return {"message": "Utilisateur désactivé", "user_id": user_id}
+
+
+@app.put("/api/users/change-password")
+async def change_password(
+    data: PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Changer le mot de passe de l'utilisateur connecté
+    """
+    # Vérifier l'ancien mot de passe
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Mot de passe actuel incorrect")
+    
+    # Valider le nouveau mot de passe
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Le nouveau mot de passe doit contenir au moins 8 caractères")
+    
+    # Mettre à jour le mot de passe
+    current_user.hashed_password = hash_password(data.new_password)
+    db.commit()
+    
+    # Envoyer email de confirmation
+    send_email(
+        to=current_user.email,
+        subject="Mot de passe modifié - Afrikalytics",
+        html=f"""
+            <h2>Mot de passe modifié</h2>
+            <p>Bonjour {current_user.full_name},</p>
+            <p>Votre mot de passe Afrikalytics a été modifié avec succès.</p>
+            <p>Si vous n'êtes pas à l'origine de cette modification, contactez-nous immédiatement.</p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {"message": "Mot de passe modifié avec succès"}
 
 
 if __name__ == "__main__":
