@@ -353,19 +353,37 @@ async def paydunya_webhook(
         if "application/json" in content_type:
             data = await request.json()
         else:
-            # Form data
+            # Form data avec format data[key][subkey]
             form_data = await request.form()
-            data = dict(form_data)
-            # Essayer de parser les données JSON dans le form si présentes
-            if "data" in data:
-                import json
-                try:
-                    data = json.loads(data["data"])
-                except:
-                    pass
+            raw_data = dict(form_data)
+            
+            print(f"PayDunya Webhook reçu (raw): {raw_data}")
+            print(f"Content-Type: {content_type}")
+            
+            # Parser le format PayDunya data[key][subkey]
+            data = {}
+            for key, value in raw_data.items():
+                if key.startswith("data["):
+                    # Extraire les clés imbriquées
+                    # data[status] -> status
+                    # data[custom_data][email] -> custom_data.email
+                    import re
+                    matches = re.findall(r'\[([^\]]+)\]', key)
+                    
+                    if len(matches) == 1:
+                        data[matches[0]] = value
+                    elif len(matches) == 2:
+                        if matches[0] not in data:
+                            data[matches[0]] = {}
+                        data[matches[0]][matches[1]] = value
+                    elif len(matches) == 3:
+                        if matches[0] not in data:
+                            data[matches[0]] = {}
+                        if matches[1] not in data[matches[0]]:
+                            data[matches[0]][matches[1]] = {}
+                        data[matches[0]][matches[1]][matches[2]] = value
         
-        print(f"PayDunya Webhook reçu: {data}")
-        print(f"Content-Type: {content_type}")
+        print(f"PayDunya Webhook parsé: {data}")
         
         # Vérifier le statut du paiement
         # PayDunya peut envoyer status ou response_code
