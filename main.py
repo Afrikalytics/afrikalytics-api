@@ -347,11 +347,58 @@ async def paydunya_webhook(
     Webhook PayDunya - appelé après paiement réussi
     """
     try:
-        data = await request.json()
+        # PayDunya peut envoyer JSON ou form-data
+        content_type = request.headers.get("content-type", "")
+        
+        if "application/json" in content_type:
+            data = await request.json()
+        else:
+            # Form data
+            form_data = await request.form()
+            data = dict(form_data)
+            # Essayer de parser les données JSON dans le form si présentes
+            if "data" in data:
+                import json
+                try:
+                    data = json.loads(data["data"])
+                except:
+                    pass
+        
         print(f"PayDunya Webhook reçu: {data}")
+        print(f"Content-Type: {content_type}")
         
         # Vérifier le statut du paiement
-        status = data.get("status")
+        # PayDunya peut envoyer status ou response_code
+        status = data.get("status") or data.get("response_code")
+        
+        # Si on a un token, vérifier le paiement via l'API
+        token = data.get("token") or data.get("invoice_token")
+        
+        if token and not status:
+            # Vérifier le paiement via l'API PayDunya
+            import requests as req
+            
+            if PAYDUNYA_MODE == "live":
+                verify_url = f"https://app.paydunya.com/api/v1/checkout-invoice/confirm/{token}"
+            else:
+                verify_url = f"https://app.paydunya.com/sandbox-api/v1/checkout-invoice/confirm/{token}"
+            
+            verify_headers = {
+                "PAYDUNYA-MASTER-KEY": PAYDUNYA_MASTER_KEY,
+                "PAYDUNYA-PRIVATE-KEY": PAYDUNYA_PRIVATE_KEY,
+                "PAYDUNYA-TOKEN": PAYDUNYA_TOKEN
+            }
+            
+            try:
+                verify_response = req.get(verify_url, headers=verify_headers)
+                verify_data = verify_response.json()
+                print(f"Vérification PayDunya: {verify_data}")
+                
+                status = verify_data.get("status")
+                if not data.get("custom_data"):
+                    data["custom_data"] = verify_data.get("custom_data", {})
+            except Exception as e:
+                print(f"Erreur vérification: {e}")
         
         if status != "completed":
             print(f"Paiement non complété: {status}")
@@ -359,12 +406,24 @@ async def paydunya_webhook(
         
         # Récupérer les données personnalisées
         custom_data = data.get("custom_data", {})
+        
+        # Si custom_data est une chaîne JSON, la parser
+        if isinstance(custom_data, str):
+            import json
+            try:
+                custom_data = json.loads(custom_data)
+            except:
+                custom_data = {}
+        
         email = custom_data.get("email")
         name = custom_data.get("name")
         plan = custom_data.get("plan", "professionnel")
         
+        print(f"Custom data: email={email}, name={name}, plan={plan}")
+        
         if not email:
             print("Email manquant dans custom_data")
+            print(f"Data complète reçue: {data}")
             return {"status": "error", "reason": "Email manquant"}
         
         # Vérifier si l'utilisateur existe
