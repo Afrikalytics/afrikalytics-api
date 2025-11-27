@@ -195,6 +195,13 @@ class PasswordChange(BaseModel):
     current_password: str
     new_password: str
 
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+class ResetPassword(BaseModel):
+    token: str
+    new_password: str
+
 # ==================== HELPERS ====================
 
 def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
@@ -738,6 +745,107 @@ async def login(data: UserLogin, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user": user
     }
+
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(data: ForgotPassword, db: Session = Depends(get_db)):
+    """
+    Envoyer un email de réinitialisation de mot de passe
+    """
+    user = db.query(User).filter(User.email == data.email).first()
+    
+    # Ne pas révéler si l'email existe ou non (sécurité)
+    if not user:
+        return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé"}
+    
+    # Créer un token de reset (expire dans 1h)
+    reset_token = create_access_token(
+        data={"sub": user.email, "type": "reset"},
+        expires_delta=timedelta(hours=1)
+    )
+    
+    # URL de reset
+    reset_url = f"https://dashboard.afrikalytics.com/reset-password?token={reset_token}"
+    
+    # Envoyer l'email
+    send_email(
+        to=user.email,
+        subject="Réinitialisation de votre mot de passe - Afrikalytics",
+        html=f"""
+            <h2>Réinitialisation de mot de passe</h2>
+            <p>Bonjour {user.full_name},</p>
+            <p>Vous avez demandé à réinitialiser votre mot de passe Afrikalytics.</p>
+            <p>Cliquez sur le bouton ci-dessous pour définir un nouveau mot de passe :</p>
+            <p style="margin: 30px 0;">
+                <a href="{reset_url}" 
+                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Réinitialiser mon mot de passe
+                </a>
+            </p>
+            <p style="color: #666; font-size: 14px;">Ce lien expire dans <strong>1 heure</strong>.</p>
+            <p style="color: #666; font-size: 14px;">Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.</p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé"}
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(data: ResetPassword, db: Session = Depends(get_db)):
+    """
+    Réinitialiser le mot de passe avec le token
+    """
+    # Vérifier le token
+    payload = decode_access_token(data.token)
+    
+    if not payload:
+        raise HTTPException(status_code=400, detail="Lien invalide ou expiré")
+    
+    # Vérifier que c'est bien un token de reset
+    if payload.get("type") != "reset":
+        raise HTTPException(status_code=400, detail="Lien invalide")
+    
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=400, detail="Lien invalide")
+    
+    # Trouver l'utilisateur
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Utilisateur non trouvé")
+    
+    # Valider le nouveau mot de passe
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 8 caractères")
+    
+    # Mettre à jour le mot de passe
+    user.hashed_password = hash_password(data.new_password)
+    db.commit()
+    
+    # Envoyer email de confirmation
+    send_email(
+        to=user.email,
+        subject="Mot de passe modifié - Afrikalytics",
+        html=f"""
+            <h2>Mot de passe modifié</h2>
+            <p>Bonjour {user.full_name},</p>
+            <p>Votre mot de passe Afrikalytics a été réinitialisé avec succès.</p>
+            <p>Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.</p>
+            <p style="margin: 30px 0;">
+                <a href="https://dashboard.afrikalytics.com/login" 
+                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Se connecter
+                </a>
+            </p>
+            <p style="color: #e74c3c; font-size: 14px;">Si vous n'êtes pas à l'origine de cette modification, contactez-nous immédiatement.</p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {"message": "Mot de passe réinitialisé avec succès"}
 
 
 @app.get("/api/users/me", response_model=UserResponse)
