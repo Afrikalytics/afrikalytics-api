@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
@@ -9,6 +10,11 @@ from datetime import datetime, timedelta
 import resend
 import hashlib
 import hmac
+
+# Rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from database import get_db, engine
 from models import Base, User, Study, Insight, Report, Contact, Subscription
@@ -27,11 +33,18 @@ PAYDUNYA_PRIVATE_KEY = os.getenv("PAYDUNYA_PRIVATE_KEY", "")
 PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
 PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")  # test ou live
 
+# Configurer Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="Afrikalytics API",
     description="Backend API pour Afrikalytics AI - Intelligence d'Affaires pour l'Afrique",
     version="1.0.0"
 )
+
+# Ajouter le rate limiter à l'app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS - Permettre les requêtes depuis le frontend
 app.add_middleware(
@@ -688,9 +701,11 @@ async def create_user_from_zapier(
 # ==================== AUTHENTIFICATION ====================
 
 @app.post("/api/auth/register", response_model=TokenResponse)
-async def register(data: UserRegister, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+async def register(request: Request, data: UserRegister, db: Session = Depends(get_db)):
     """
     Inscription d'un nouvel utilisateur (plan Basic gratuit)
+    Limité à 3 tentatives par minute
     """
     # Vérifier si l'email existe déjà
     existing_user = db.query(User).filter(User.email == data.email).first()
@@ -751,7 +766,12 @@ async def register(data: UserRegister, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/login", response_model=TokenResponse)
-async def login(data: UserLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)):
+    """
+    Connexion utilisateur
+    Limité à 5 tentatives par minute
+    """
     user = db.query(User).filter(User.email == data.email).first()
     
     if not user or not verify_password(data.password, user.hashed_password):
@@ -770,9 +790,11 @@ async def login(data: UserLogin, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/forgot-password")
-async def forgot_password(data: ForgotPassword, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+async def forgot_password(request: Request, data: ForgotPassword, db: Session = Depends(get_db)):
     """
     Envoyer un email de réinitialisation de mot de passe
+    Limité à 3 tentatives par minute
     """
     user = db.query(User).filter(User.email == data.email).first()
     
@@ -815,9 +837,11 @@ async def forgot_password(data: ForgotPassword, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/reset-password")
-async def reset_password(data: ResetPassword, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def reset_password(request: Request, data: ResetPassword, db: Session = Depends(get_db)):
     """
     Réinitialiser le mot de passe avec le token
+    Limité à 5 tentatives par minute
     """
     # Vérifier le token
     payload = decode_access_token(data.token)
@@ -1265,12 +1289,15 @@ async def track_download_by_type(
 # ==================== CONTACTS ====================
 
 @app.post("/api/contacts", response_model=ContactResponse)
+@limiter.limit("3/minute")
 async def create_contact(
+    request: Request,
     data: ContactCreate,
     db: Session = Depends(get_db)
 ):
     """
     Créer un nouveau message de contact (public)
+    Limité à 3 messages par minute
     """
     # Sauvegarder en base de données
     new_contact = Contact(
