@@ -2,6 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy.sql import func
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 import secrets
@@ -10,6 +12,7 @@ from datetime import datetime, timedelta
 import resend
 import hashlib
 import hmac
+import random
 
 # Rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -19,6 +22,17 @@ from slowapi.errors import RateLimitExceeded
 from database import get_db, engine
 from models import Base, User, Study, Insight, Report, Contact, Subscription
 from auth import hash_password, verify_password, create_access_token, decode_access_token
+
+# Modèle pour les codes de vérification 2FA
+class VerificationCode(Base):
+    __tablename__ = "verification_codes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code = Column(String(6), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 # Créer les tables
 Base.metadata.create_all(bind=engine)
@@ -214,6 +228,16 @@ class ForgotPassword(BaseModel):
 class ResetPassword(BaseModel):
     token: str
     new_password: str
+
+class VerifyCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+class LoginPendingResponse(BaseModel):
+    status: str
+    message: str
+    email: str
+    requires_verification: bool
 
 # ==================== HELPERS ====================
 
@@ -769,7 +793,8 @@ async def register(request: Request, data: UserRegister, db: Session = Depends(g
 @limiter.limit("5/minute")
 async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)):
     """
-    Connexion utilisateur
+    Connexion utilisateur - Étape 1 : Vérification email/mot de passe
+    Envoie un code de vérification par email
     Limité à 5 tentatives par minute
     """
     user = db.query(User).filter(User.email == data.email).first()
@@ -780,6 +805,93 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
     
+    # Vérifier si l'abonnement est expiré (backup du cron job)
+    if user.plan in ["professionnel", "entreprise"]:
+        active_subscription = db.query(Subscription).filter(
+            Subscription.user_id == user.id,
+            Subscription.status == "active"
+        ).first()
+        
+        if active_subscription and active_subscription.end_date:
+            end_date = active_subscription.end_date.date() if hasattr(active_subscription.end_date, 'date') else active_subscription.end_date
+            if end_date < datetime.utcnow().date():
+                # Abonnement expiré - rétrograder
+                active_subscription.status = "expired"
+                user.plan = "basic"
+                db.commit()
+    
+    # Générer un code à 6 chiffres
+    code = str(random.randint(100000, 999999))
+    
+    # Supprimer les anciens codes non utilisés de cet utilisateur
+    db.query(VerificationCode).filter(
+        VerificationCode.user_id == user.id,
+        VerificationCode.is_used == False
+    ).delete()
+    
+    # Créer le nouveau code (expire dans 10 minutes)
+    verification = VerificationCode(
+        user_id=user.id,
+        code=code,
+        expires_at=datetime.utcnow() + timedelta(minutes=10)
+    )
+    db.add(verification)
+    db.commit()
+    
+    # Envoyer le code par email
+    send_email(
+        to=user.email,
+        subject="🔐 Votre code de connexion Afrikalytics",
+        html=f"""
+            <h2>Code de vérification</h2>
+            <p>Bonjour {user.full_name},</p>
+            <p>Voici votre code de connexion :</p>
+            <div style="background-color: #f3f4f6; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
+                <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1f2937;">{code}</span>
+            </div>
+            <p style="color: #666; font-size: 14px;">Ce code expire dans <strong>10 minutes</strong>.</p>
+            <p style="color: #e74c3c; font-size: 14px;">Si vous n'avez pas demandé ce code, ignorez cet email.</p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {
+        "status": "pending_verification",
+        "message": "Un code de vérification a été envoyé à votre email",
+        "email": user.email,
+        "requires_verification": True
+    }
+
+
+@app.post("/api/auth/verify-code", response_model=TokenResponse)
+@limiter.limit("5/minute")
+async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = Depends(get_db)):
+    """
+    Connexion utilisateur - Étape 2 : Vérification du code
+    Retourne le token JWT si le code est correct
+    """
+    user = db.query(User).filter(User.email == data.email).first()
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Code invalide")
+    
+    # Chercher le code valide
+    verification = db.query(VerificationCode).filter(
+        VerificationCode.user_id == user.id,
+        VerificationCode.code == data.code,
+        VerificationCode.is_used == False,
+        VerificationCode.expires_at > datetime.utcnow()
+    ).first()
+    
+    if not verification:
+        raise HTTPException(status_code=401, detail="Code invalide ou expiré")
+    
+    # Marquer le code comme utilisé
+    verification.is_used = True
+    db.commit()
+    
+    # Créer le token JWT
     access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
     
     return {
@@ -787,6 +899,56 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
         "token_type": "bearer",
         "user": user
     }
+
+
+@app.post("/api/auth/resend-code")
+@limiter.limit("3/minute")
+async def resend_code(request: Request, data: ForgotPassword, db: Session = Depends(get_db)):
+    """
+    Renvoyer un nouveau code de vérification
+    """
+    user = db.query(User).filter(User.email == data.email).first()
+    
+    if not user:
+        # Ne pas révéler si l'email existe
+        return {"message": "Si un compte existe, un nouveau code a été envoyé"}
+    
+    # Générer un nouveau code
+    code = str(random.randint(100000, 999999))
+    
+    # Supprimer les anciens codes
+    db.query(VerificationCode).filter(
+        VerificationCode.user_id == user.id,
+        VerificationCode.is_used == False
+    ).delete()
+    
+    # Créer le nouveau code
+    verification = VerificationCode(
+        user_id=user.id,
+        code=code,
+        expires_at=datetime.utcnow() + timedelta(minutes=10)
+    )
+    db.add(verification)
+    db.commit()
+    
+    # Envoyer le code
+    send_email(
+        to=user.email,
+        subject="🔐 Nouveau code de connexion Afrikalytics",
+        html=f"""
+            <h2>Nouveau code de vérification</h2>
+            <p>Bonjour {user.full_name},</p>
+            <p>Voici votre nouveau code de connexion :</p>
+            <div style="background-color: #f3f4f6; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
+                <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1f2937;">{code}</span>
+            </div>
+            <p style="color: #666; font-size: 14px;">Ce code expire dans <strong>10 minutes</strong>.</p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {"message": "Un nouveau code a été envoyé"}
 
 
 @app.post("/api/auth/forgot-password")
@@ -1447,6 +1609,209 @@ async def change_password(
     )
     
     return {"message": "Mot de passe modifié avec succès"}
+
+
+# ==================== GESTION DES ABONNEMENTS ====================
+
+CRON_SECRET = os.getenv("CRON_SECRET", "your-cron-secret-key")
+
+@app.post("/api/subscriptions/check-expiry")
+async def check_subscription_expiry(
+    db: Session = Depends(get_db),
+    x_cron_secret: Optional[str] = Header(None)
+):
+    """
+    Vérifier les abonnements et envoyer les rappels / rétrograder
+    Appelé par un cron job quotidien (cron-job.org)
+    """
+    # Vérifier le secret en production
+    if os.getenv("ENVIRONMENT") == "production":
+        if x_cron_secret != CRON_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    today = datetime.utcnow().date()
+    results = {
+        "checked_at": datetime.utcnow().isoformat(),
+        "reminders_j7": 0,
+        "reminders_j3": 0,
+        "reminders_j0": 0,
+        "downgraded": 0,
+        "errors": []
+    }
+    
+    # Récupérer tous les abonnements actifs
+    active_subscriptions = db.query(Subscription).filter(
+        Subscription.status == "active"
+    ).all()
+    
+    for sub in active_subscriptions:
+        try:
+            if not sub.end_date:
+                continue
+            
+            end_date = sub.end_date.date() if hasattr(sub.end_date, 'date') else sub.end_date
+            days_remaining = (end_date - today).days
+            
+            # Récupérer l'utilisateur
+            user = db.query(User).filter(User.id == sub.user_id).first()
+            if not user:
+                continue
+            
+            # J-7 : Rappel 7 jours avant
+            if days_remaining == 7:
+                send_email(
+                    to=user.email,
+                    subject="⏰ Votre abonnement Afrikalytics expire dans 7 jours",
+                    html=f"""
+                        <h2>Bonjour {user.full_name},</h2>
+                        <p>Votre abonnement <strong>{sub.plan.capitalize()}</strong> expire dans <strong>7 jours</strong>.</p>
+                        <p>Pour continuer à profiter de tous les avantages Premium :</p>
+                        <ul>
+                            <li>✅ Résultats en temps réel</li>
+                            <li>✅ Insights complets</li>
+                            <li>✅ Rapports PDF détaillés</li>
+                            <li>✅ Dashboard avancé</li>
+                        </ul>
+                        <p style="margin: 30px 0;">
+                            <a href="https://afrikalytics.com/checkout" 
+                               style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                                Renouveler mon abonnement
+                            </a>
+                        </p>
+                        <hr>
+                        <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                    """
+                )
+                results["reminders_j7"] += 1
+            
+            # J-3 : Rappel 3 jours avant
+            elif days_remaining == 3:
+                send_email(
+                    to=user.email,
+                    subject="⚠️ Plus que 3 jours pour renouveler votre abonnement Afrikalytics",
+                    html=f"""
+                        <h2>Bonjour {user.full_name},</h2>
+                        <p>Votre abonnement <strong>{sub.plan.capitalize()}</strong> expire dans <strong>3 jours</strong>.</p>
+                        <p style="color: #e74c3c; font-weight: bold;">
+                            Sans renouvellement, vous perdrez l'accès aux fonctionnalités Premium.
+                        </p>
+                        <p style="margin: 30px 0;">
+                            <a href="https://afrikalytics.com/checkout" 
+                               style="background-color: #e74c3c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                                Renouveler maintenant
+                            </a>
+                        </p>
+                        <hr>
+                        <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                    """
+                )
+                results["reminders_j3"] += 1
+            
+            # J-0 : Dernier jour
+            elif days_remaining == 0:
+                send_email(
+                    to=user.email,
+                    subject="🚨 DERNIER JOUR - Votre abonnement Afrikalytics expire aujourd'hui",
+                    html=f"""
+                        <h2>Bonjour {user.full_name},</h2>
+                        <p style="color: #e74c3c; font-size: 18px; font-weight: bold;">
+                            Votre abonnement {sub.plan.capitalize()} expire AUJOURD'HUI !
+                        </p>
+                        <p>Renouvelez maintenant pour ne pas perdre vos accès Premium.</p>
+                        <p style="margin: 30px 0;">
+                            <a href="https://afrikalytics.com/checkout" 
+                               style="background-color: #e74c3c; color: white; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                                RENOUVELER MAINTENANT
+                            </a>
+                        </p>
+                        <hr>
+                        <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                    """
+                )
+                results["reminders_j0"] += 1
+            
+            # J+1 : Abonnement expiré - Rétrograder vers Basic
+            elif days_remaining < 0:
+                # Mettre à jour l'abonnement
+                sub.status = "expired"
+                
+                # Rétrograder l'utilisateur vers Basic
+                user.plan = "basic"
+                
+                db.commit()
+                
+                # Envoyer email
+                send_email(
+                    to=user.email,
+                    subject="😢 Votre abonnement Afrikalytics a expiré",
+                    html=f"""
+                        <h2>Bonjour {user.full_name},</h2>
+                        <p>Votre abonnement <strong>{sub.plan.capitalize()}</strong> a expiré.</p>
+                        <p>Votre compte a été rétrogradé au <strong>Plan Basic (gratuit)</strong>.</p>
+                        <p>Vous conservez l'accès à :</p>
+                        <ul>
+                            <li>✅ Participation aux études</li>
+                            <li>✅ Aperçu des insights</li>
+                            <li>✅ Dashboard basic</li>
+                        </ul>
+                        <p>Vous n'avez plus accès à :</p>
+                        <ul>
+                            <li>❌ Résultats en temps réel</li>
+                            <li>❌ Insights complets</li>
+                            <li>❌ Rapports PDF</li>
+                        </ul>
+                        <p style="margin: 30px 0;">
+                            <a href="https://afrikalytics.com/checkout" 
+                               style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                                Réactiver mon abonnement Premium
+                            </a>
+                        </p>
+                        <hr>
+                        <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                    """
+                )
+                results["downgraded"] += 1
+        
+        except Exception as e:
+            results["errors"].append(f"User {sub.user_id}: {str(e)}")
+    
+    return results
+
+
+@app.get("/api/subscriptions/my-subscription")
+async def get_my_subscription(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer l'abonnement de l'utilisateur connecté
+    """
+    subscription = db.query(Subscription).filter(
+        Subscription.user_id == current_user.id,
+        Subscription.status == "active"
+    ).first()
+    
+    if not subscription:
+        return {
+            "has_subscription": False,
+            "plan": current_user.plan,
+            "message": "Aucun abonnement actif"
+        }
+    
+    # Calculer les jours restants
+    days_remaining = None
+    if subscription.end_date:
+        end_date = subscription.end_date.date() if hasattr(subscription.end_date, 'date') else subscription.end_date
+        days_remaining = (end_date - datetime.utcnow().date()).days
+    
+    return {
+        "has_subscription": True,
+        "plan": subscription.plan,
+        "status": subscription.status,
+        "start_date": subscription.start_date.isoformat() if subscription.start_date else None,
+        "end_date": subscription.end_date.isoformat() if subscription.end_date else None,
+        "days_remaining": days_remaining
+    }
 
 
 if __name__ == "__main__":
