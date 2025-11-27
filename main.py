@@ -789,7 +789,7 @@ async def register(request: Request, data: UserRegister, db: Session = Depends(g
     }
 
 
-@app.post("/api/auth/login", response_model=TokenResponse)
+@app.post("/api/auth/login")
 @limiter.limit("5/minute")
 async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)):
     """
