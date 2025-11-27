@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
@@ -7,6 +7,8 @@ import secrets
 import os
 from datetime import datetime, timedelta
 import resend
+import hashlib
+import hmac
 
 from database import get_db, engine
 from models import Base, User, Study, Insight, Report, Contact
@@ -18,6 +20,12 @@ Base.metadata.create_all(bind=engine)
 # Configurer Resend
 resend.api_key = os.getenv("RESEND_API_KEY")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "contact@afrikalytics.com")
+
+# Configurer PayDunya
+PAYDUNYA_MASTER_KEY = os.getenv("PAYDUNYA_MASTER_KEY", "")
+PAYDUNYA_PRIVATE_KEY = os.getenv("PAYDUNYA_PRIVATE_KEY", "")
+PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
+PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")  # test ou live
 
 app = FastAPI(
     title="Afrikalytics API",
@@ -178,6 +186,11 @@ class ContactResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class PaymentCreate(BaseModel):
+    email: EmailStr
+    name: str
+    plan: str = "professionnel"
+
 # ==================== HELPERS ====================
 
 def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
@@ -230,6 +243,246 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow()}
+
+
+# ==================== PAYDUNYA ====================
+
+@app.post("/api/paydunya/create-invoice")
+async def create_paydunya_invoice(
+    data: PaymentCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Créer une facture PayDunya pour le paiement
+    """
+    import requests
+    
+    # URL PayDunya selon le mode
+    if PAYDUNYA_MODE == "live":
+        base_url = "https://app.paydunya.com/api/v1"
+    else:
+        base_url = "https://app.paydunya.com/sandbox-api/v1"
+    
+    # Définir le prix selon le plan
+    prices = {
+        "professionnel": 295000,  # 295 000 CFA
+        "entreprise": 500000,     # Sur mesure - à ajuster
+    }
+    
+    amount = prices.get(data.plan, 295000)
+    
+    # Créer la facture
+    invoice_data = {
+        "invoice": {
+            "items": {
+                "item_0": {
+                    "name": f"Abonnement {data.plan.capitalize()} - Afrikalytics",
+                    "quantity": 1,
+                    "unit_price": amount,
+                    "total_price": amount,
+                    "description": f"Abonnement mensuel au plan {data.plan.capitalize()}"
+                }
+            },
+            "total_amount": amount,
+            "description": f"Abonnement Afrikalytics - Plan {data.plan.capitalize()}"
+        },
+        "store": {
+            "name": "Afrikalytics AI",
+            "tagline": "Intelligence d'Affaires pour l'Afrique",
+            "postal_address": "Dakar, Sénégal",
+            "website_url": "https://afrikalytics.com"
+        },
+        "custom_data": {
+            "email": data.email,
+            "name": data.name,
+            "plan": data.plan
+        },
+        "actions": {
+            "cancel_url": "https://afrikalytics.com/premium?status=cancelled",
+            "return_url": "https://dashboard.afrikalytics.com/payment-success",
+            "callback_url": "https://web-production-ef657.up.railway.app/api/paydunya/webhook"
+        }
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "PAYDUNYA-MASTER-KEY": PAYDUNYA_MASTER_KEY,
+        "PAYDUNYA-PRIVATE-KEY": PAYDUNYA_PRIVATE_KEY,
+        "PAYDUNYA-TOKEN": PAYDUNYA_TOKEN
+    }
+    
+    try:
+        response = requests.post(
+            f"{base_url}/checkout-invoice/create",
+            json=invoice_data,
+            headers=headers
+        )
+        
+        result = response.json()
+        
+        if result.get("response_code") == "00":
+            return {
+                "success": True,
+                "payment_url": result.get("response_text"),
+                "token": result.get("token")
+            }
+        else:
+            print(f"Erreur PayDunya: {result}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Erreur création facture: {result.get('response_text', 'Erreur inconnue')}"
+            )
+            
+    except requests.RequestException as e:
+        print(f"Erreur requête PayDunya: {e}")
+        raise HTTPException(status_code=500, detail="Erreur de connexion à PayDunya")
+
+
+@app.post("/api/paydunya/webhook")
+async def paydunya_webhook(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Webhook PayDunya - appelé après paiement réussi
+    """
+    try:
+        data = await request.json()
+        print(f"PayDunya Webhook reçu: {data}")
+        
+        # Vérifier le statut du paiement
+        status = data.get("status")
+        
+        if status != "completed":
+            print(f"Paiement non complété: {status}")
+            return {"status": "ignored", "reason": f"Status: {status}"}
+        
+        # Récupérer les données personnalisées
+        custom_data = data.get("custom_data", {})
+        email = custom_data.get("email")
+        name = custom_data.get("name")
+        plan = custom_data.get("plan", "professionnel")
+        
+        if not email:
+            print("Email manquant dans custom_data")
+            return {"status": "error", "reason": "Email manquant"}
+        
+        # Vérifier si l'utilisateur existe
+        existing_user = db.query(User).filter(User.email == email).first()
+        
+        if existing_user:
+            # Mettre à jour l'utilisateur existant
+            existing_user.plan = plan
+            existing_user.is_active = True
+            db.commit()
+            
+            # Envoyer email de confirmation upgrade
+            send_email(
+                to=email,
+                subject="🎉 Bienvenue dans Afrikalytics Premium !",
+                html=f"""
+                    <h2>Félicitations {existing_user.full_name} !</h2>
+                    <p>Votre abonnement <strong>{plan.capitalize()}</strong> est maintenant actif.</p>
+                    <hr>
+                    <p>Vous avez maintenant accès à :</p>
+                    <ul>
+                        <li>✅ Résultats en temps réel</li>
+                        <li>✅ Insights complets</li>
+                        <li>✅ Rapports PDF détaillés</li>
+                        <li>✅ Dashboard avancé</li>
+                        <li>✅ Support prioritaire</li>
+                    </ul>
+                    <hr>
+                    <p><a href="https://dashboard.afrikalytics.com">Accéder à mon dashboard Premium →</a></p>
+                    <hr>
+                    <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                """
+            )
+            
+            return {"status": "success", "action": "user_upgraded", "user_id": existing_user.id}
+        
+        else:
+            # Créer un nouvel utilisateur
+            temp_password = secrets.token_urlsafe(12)
+            hashed_password = hash_password(temp_password)
+            
+            new_user = User(
+                email=email,
+                full_name=name,
+                hashed_password=hashed_password,
+                plan=plan,
+                is_active=True
+            )
+            
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            
+            # Envoyer email avec identifiants
+            send_email(
+                to=email,
+                subject="🎉 Bienvenue dans Afrikalytics Premium !",
+                html=f"""
+                    <h2>Bienvenue {name} !</h2>
+                    <p>Votre compte Afrikalytics <strong>{plan.capitalize()}</strong> a été créé avec succès.</p>
+                    <hr>
+                    <h3>Vos identifiants de connexion :</h3>
+                    <p><strong>Email :</strong> {email}</p>
+                    <p><strong>Mot de passe temporaire :</strong> {temp_password}</p>
+                    <p style="color: #e74c3c;"><em>⚠️ Pensez à changer votre mot de passe après votre première connexion.</em></p>
+                    <hr>
+                    <p>Vous avez maintenant accès à :</p>
+                    <ul>
+                        <li>✅ Résultats en temps réel</li>
+                        <li>✅ Insights complets</li>
+                        <li>✅ Rapports PDF détaillés</li>
+                        <li>✅ Dashboard avancé</li>
+                        <li>✅ Support prioritaire</li>
+                    </ul>
+                    <hr>
+                    <p><a href="https://dashboard.afrikalytics.com/login">Se connecter à mon dashboard →</a></p>
+                    <hr>
+                    <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                """
+            )
+            
+            return {"status": "success", "action": "user_created", "user_id": new_user.id}
+    
+    except Exception as e:
+        print(f"Erreur webhook PayDunya: {e}")
+        return {"status": "error", "reason": str(e)}
+
+
+@app.get("/api/paydunya/verify/{token}")
+async def verify_payment(token: str):
+    """
+    Vérifier le statut d'un paiement
+    """
+    import requests
+    
+    if PAYDUNYA_MODE == "live":
+        base_url = "https://app.paydunya.com/api/v1"
+    else:
+        base_url = "https://app.paydunya.com/sandbox-api/v1"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "PAYDUNYA-MASTER-KEY": PAYDUNYA_MASTER_KEY,
+        "PAYDUNYA-PRIVATE-KEY": PAYDUNYA_PRIVATE_KEY,
+        "PAYDUNYA-TOKEN": PAYDUNYA_TOKEN
+    }
+    
+    try:
+        response = requests.get(
+            f"{base_url}/checkout-invoice/confirm/{token}",
+            headers=headers
+        )
+        
+        return response.json()
+        
+    except requests.RequestException as e:
+        print(f"Erreur vérification PayDunya: {e}")
+        raise HTTPException(status_code=500, detail="Erreur de vérification")
 
 
 # ==================== ZAPIER WEBHOOK ====================
