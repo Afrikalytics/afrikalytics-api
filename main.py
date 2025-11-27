@@ -65,6 +65,7 @@ class UserResponse(BaseModel):
     full_name: str
     plan: str
     is_active: bool
+    is_admin: bool = False  # AJOUTÉ ICI !
     created_at: datetime
 
     class Config:
