@@ -65,7 +65,7 @@ class UserResponse(BaseModel):
     full_name: str
     plan: str
     is_active: bool
-    is_admin: bool = False  # AJOUTÉ ICI !
+    is_admin: bool = False
     created_at: datetime
 
     class Config:
@@ -141,7 +141,7 @@ class ReportCreate(BaseModel):
     file_url: str
     file_name: Optional[str] = None
     file_size: Optional[str] = None
-    report_type: Optional[str] = "premium"  # basic ou premium
+    report_type: Optional[str] = "premium"
     is_available: Optional[bool] = True
 
 class ReportResponse(BaseModel):
@@ -196,6 +196,25 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     
     return user
+
+
+def send_email(to: str, subject: str, html: str):
+    """
+    Envoyer un email via Resend
+    """
+    try:
+        params = {
+            "from": "Afrikalytics <noreply@notifications.afrikalytics.com>",
+            "to": [to],
+            "subject": subject,
+            "html": html
+        }
+        resend.Emails.send(params)
+        return True
+    except Exception as e:
+        print(f"Erreur envoi email: {e}")
+        return False
+
 
 # ==================== ROUTES ====================
 
@@ -301,33 +320,29 @@ async def register(data: UserRegister, db: Session = Depends(get_db)):
     # Créer le token
     access_token = create_access_token(data={"sub": new_user.email, "user_id": new_user.id})
     
-    # Envoyer email de bienvenue (optionnel)
-    try:
-        resend.emails.send({
-            "from": "Afrikalytics <noreply@notifications.afrikalytics.com>",
-            "to": [new_user.email],
-            "subject": "Bienvenue sur Afrikalytics AI !",
-            "html": f"""
-                <h2>Bienvenue {new_user.full_name} !</h2>
-                <p>Votre compte Afrikalytics a été créé avec succès.</p>
-                <p><strong>Plan :</strong> Basic (Gratuit)</p>
-                <hr>
-                <p>Avec votre compte Basic, vous pouvez :</p>
-                <ul>
-                    <li>✅ Participer à toutes nos études</li>
-                    <li>✅ Voir un aperçu des insights</li>
-                    <li>✅ Accéder au dashboard basic</li>
-                </ul>
-                <p>Pour accéder aux résultats complets, insights détaillés et rapports PDF, passez à <strong>Premium</strong> !</p>
-                <hr>
-                <p><a href="https://dashboard.afrikalytics.com">Accéder à mon dashboard →</a></p>
-                <p><a href="https://afrikalytics.com/premium">Découvrir les offres Premium →</a></p>
-                <hr>
-                <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-            """
-        })
-    except Exception as e:
-        print(f"Erreur envoi email bienvenue: {e}")
+    # Envoyer email de bienvenue
+    send_email(
+        to=new_user.email,
+        subject="Bienvenue sur Afrikalytics AI !",
+        html=f"""
+            <h2>Bienvenue {new_user.full_name} !</h2>
+            <p>Votre compte Afrikalytics a été créé avec succès.</p>
+            <p><strong>Plan :</strong> Basic (Gratuit)</p>
+            <hr>
+            <p>Avec votre compte Basic, vous pouvez :</p>
+            <ul>
+                <li>✅ Participer à toutes nos études</li>
+                <li>✅ Voir un aperçu des insights</li>
+                <li>✅ Accéder au dashboard basic</li>
+            </ul>
+            <p>Pour accéder aux résultats complets, insights détaillés et rapports PDF, passez à <strong>Premium</strong> !</p>
+            <hr>
+            <p><a href="https://dashboard.afrikalytics.com">Accéder à mon dashboard →</a></p>
+            <p><a href="https://afrikalytics.com/premium">Découvrir les offres Premium →</a></p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
     
     return {
         "access_token": access_token,
@@ -770,26 +785,21 @@ async def create_contact(
     db.refresh(new_contact)
     
     # Envoyer email de notification
-    try:
-        resend.emails.send({
-            "from": "Afrikalytics <noreply@notifications.afrikalytics.com>",
-            "to": [CONTACT_EMAIL],
-            "subject": f"Nouveau message de contact - {data.name}",
-            "html": f"""
-                <h2>Nouveau message de contact</h2>
-                <p><strong>Nom :</strong> {data.name}</p>
-                <p><strong>Email :</strong> {data.email}</p>
-                <p><strong>Entreprise :</strong> {data.company or 'Non renseigné'}</p>
-                <hr>
-                <p><strong>Message :</strong></p>
-                <p>{data.message}</p>
-                <hr>
-                <p><em>Message envoyé depuis le formulaire de contact Afrikalytics</em></p>
-            """
-        })
-    except Exception as e:
-        # Log l'erreur mais ne pas bloquer la requête
-        print(f"Erreur envoi email: {e}")
+    send_email(
+        to=CONTACT_EMAIL,
+        subject=f"Nouveau message de contact - {data.name}",
+        html=f"""
+            <h2>Nouveau message de contact</h2>
+            <p><strong>Nom :</strong> {data.name}</p>
+            <p><strong>Email :</strong> {data.email}</p>
+            <p><strong>Entreprise :</strong> {data.company or 'Non renseigné'}</p>
+            <hr>
+            <p><strong>Message :</strong></p>
+            <p>{data.message}</p>
+            <hr>
+            <p><em>Message envoyé depuis le formulaire de contact Afrikalytics</em></p>
+        """
+    )
     
     return new_contact
 
