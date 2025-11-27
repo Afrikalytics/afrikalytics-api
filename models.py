@@ -89,6 +89,7 @@ class Report(Base):
     file_url = Column(String(500), nullable=False)
     file_name = Column(String(255), nullable=True)
     file_size = Column(String(50), nullable=True)
+    report_type = Column(String(50), default="premium")  # basic, premium
     download_count = Column(Integer, default=0)
     is_available = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

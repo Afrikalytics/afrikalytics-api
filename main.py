@@ -140,6 +140,7 @@ class ReportCreate(BaseModel):
     file_url: str
     file_name: Optional[str] = None
     file_size: Optional[str] = None
+    report_type: Optional[str] = "premium"  # basic ou premium
     is_available: Optional[bool] = True
 
 class ReportResponse(BaseModel):
@@ -150,6 +151,7 @@ class ReportResponse(BaseModel):
     file_url: str
     file_name: Optional[str]
     file_size: Optional[str]
+    report_type: Optional[str]
     download_count: int
     is_available: bool
     created_at: datetime
@@ -593,9 +595,24 @@ async def get_all_reports(db: Session = Depends(get_db)):
 @app.get("/api/reports/study/{study_id}", response_model=ReportResponse)
 async def get_report_by_study(study_id: int, db: Session = Depends(get_db)):
     """
-    Récupérer le rapport d'une étude
+    Récupérer le rapport d'une étude (premier trouvé)
     """
     report = db.query(Report).filter(Report.study_id == study_id, Report.is_available == True).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    return report
+
+
+@app.get("/api/reports/study/{study_id}/type/{report_type}", response_model=ReportResponse)
+async def get_report_by_study_and_type(study_id: int, report_type: str, db: Session = Depends(get_db)):
+    """
+    Récupérer le rapport d'une étude par type (basic ou premium)
+    """
+    report = db.query(Report).filter(
+        Report.study_id == study_id, 
+        Report.report_type == report_type,
+        Report.is_available == True
+    ).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
     return report
@@ -628,6 +645,7 @@ async def create_report(
         file_url=data.file_url,
         file_name=data.file_name,
         file_size=data.file_size,
+        report_type=data.report_type,
         is_available=data.is_available
     )
     
@@ -658,6 +676,7 @@ async def update_report(
     report.file_url = data.file_url
     report.file_name = data.file_name
     report.file_size = data.file_size
+    report.report_type = data.report_type
     report.is_available = data.is_available
     
     db.commit()
@@ -700,7 +719,31 @@ async def track_download(
     report.download_count += 1
     db.commit()
     
-    return {"message": "Téléchargement enregistré", "download_count": report.download_count}
+    return {"message": "Téléchargement enregistré", "download_count": report.download_count, "file_url": report.file_url}
+
+
+@app.post("/api/reports/study/{study_id}/type/{report_type}/download")
+async def track_download_by_type(
+    study_id: int,
+    report_type: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Incrémenter le compteur de téléchargements par study_id et type
+    """
+    report = db.query(Report).filter(
+        Report.study_id == study_id,
+        Report.report_type == report_type,
+        Report.is_available == True
+    ).first()
+    
+    if not report:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    
+    report.download_count += 1
+    db.commit()
+    
+    return {"message": "Téléchargement enregistré", "download_count": report.download_count, "file_url": report.file_url}
 
 
 # ==================== CONTACTS ====================
