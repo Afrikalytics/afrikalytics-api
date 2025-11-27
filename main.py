@@ -1395,10 +1395,25 @@ async def delete_report(
 ):
     """
     Supprimer un rapport (Admin seulement)
+    Supprime aussi les URLs dans la table studies
     """
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    
+    # Récupérer l'étude associée pour vider les colonnes URL
+    if report.study_id:
+        study = db.query(Study).filter(Study.id == report.study_id).first()
+        if study:
+            # Vider la bonne colonne selon le type de rapport
+            if report.report_type == "basic":
+                study.report_url_basic = None
+            elif report.report_type == "premium":
+                study.report_url_premium = None
+            else:
+                # Si pas de type défini, vider les deux
+                study.report_url_basic = None
+                study.report_url_premium = None
     
     db.delete(report)
     db.commit()
