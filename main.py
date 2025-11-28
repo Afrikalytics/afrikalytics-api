@@ -153,6 +153,7 @@ class InsightCreate(BaseModel):
     key_findings: Optional[str] = None
     recommendations: Optional[str] = None
     author: Optional[str] = None
+    images: Optional[List[str]] = None
     is_published: Optional[bool] = False
 
 class InsightResponse(BaseModel):
@@ -163,6 +164,7 @@ class InsightResponse(BaseModel):
     key_findings: Optional[str]
     recommendations: Optional[str]
     author: Optional[str]
+    images: Optional[List[str]]
     is_published: bool
     created_at: datetime
 
@@ -1596,16 +1598,33 @@ async def delete_study(
 
 # ==================== INSIGHTS (CRUD) ====================
 
-@app.get("/api/insights", response_model=List[InsightResponse])
+def convert_insight_images(insight):
+    """Helper pour convertir les images JSON en liste"""
+    import json
+    return {
+        "id": insight.id,
+        "study_id": insight.study_id,
+        "title": insight.title,
+        "summary": insight.summary,
+        "key_findings": insight.key_findings,
+        "recommendations": insight.recommendations,
+        "author": insight.author,
+        "images": json.loads(insight.images) if insight.images else [],
+        "is_published": insight.is_published,
+        "created_at": insight.created_at
+    }
+
+
+@app.get("/api/insights")
 async def get_all_insights(db: Session = Depends(get_db)):
     """
     Récupérer tous les insights publiés
     """
     insights = db.query(Insight).filter(Insight.is_published == True).order_by(Insight.created_at.desc()).all()
-    return insights
+    return [convert_insight_images(i) for i in insights]
 
 
-@app.get("/api/insights/study/{study_id}", response_model=InsightResponse)
+@app.get("/api/insights/study/{study_id}")
 async def get_insight_by_study(study_id: int, db: Session = Depends(get_db)):
     """
     Récupérer l'insight d'une étude
@@ -1613,10 +1632,10 @@ async def get_insight_by_study(study_id: int, db: Session = Depends(get_db)):
     insight = db.query(Insight).filter(Insight.study_id == study_id, Insight.is_published == True).first()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight non trouvé")
-    return insight
+    return convert_insight_images(insight)
 
 
-@app.get("/api/insights/{insight_id}", response_model=InsightResponse)
+@app.get("/api/insights/{insight_id}")
 async def get_insight(insight_id: int, db: Session = Depends(get_db)):
     """
     Récupérer un insight par son ID
@@ -1624,7 +1643,7 @@ async def get_insight(insight_id: int, db: Session = Depends(get_db)):
     insight = db.query(Insight).filter(Insight.id == insight_id).first()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight non trouvé")
-    return insight
+    return convert_insight_images(insight)
 
 
 @app.post("/api/insights", response_model=InsightResponse)
@@ -1636,6 +1655,11 @@ async def create_insight(
     """
     Créer un nouvel insight (Admin seulement)
     """
+    import json
+    
+    # Convertir la liste d'images en JSON string pour stockage
+    images_json = json.dumps(data.images) if data.images else None
+    
     new_insight = Insight(
         study_id=data.study_id,
         title=data.title,
@@ -1643,6 +1667,7 @@ async def create_insight(
         key_findings=data.key_findings,
         recommendations=data.recommendations,
         author=data.author,
+        images=images_json,
         is_published=data.is_published
     )
     
@@ -1650,7 +1675,21 @@ async def create_insight(
     db.commit()
     db.refresh(new_insight)
     
-    return new_insight
+    # Convertir images JSON en liste pour la réponse
+    response_data = {
+        "id": new_insight.id,
+        "study_id": new_insight.study_id,
+        "title": new_insight.title,
+        "summary": new_insight.summary,
+        "key_findings": new_insight.key_findings,
+        "recommendations": new_insight.recommendations,
+        "author": new_insight.author,
+        "images": json.loads(new_insight.images) if new_insight.images else [],
+        "is_published": new_insight.is_published,
+        "created_at": new_insight.created_at
+    }
+    
+    return response_data
 
 
 @app.put("/api/insights/{insight_id}", response_model=InsightResponse)
@@ -1663,9 +1702,14 @@ async def update_insight(
     """
     Modifier un insight (Admin seulement)
     """
+    import json
+    
     insight = db.query(Insight).filter(Insight.id == insight_id).first()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight non trouvé")
+    
+    # Convertir la liste d'images en JSON string pour stockage
+    images_json = json.dumps(data.images) if data.images else None
     
     insight.study_id = data.study_id
     insight.title = data.title
@@ -1673,12 +1717,27 @@ async def update_insight(
     insight.key_findings = data.key_findings
     insight.recommendations = data.recommendations
     insight.author = data.author
+    insight.images = images_json
     insight.is_published = data.is_published
     
     db.commit()
     db.refresh(insight)
     
-    return insight
+    # Convertir images JSON en liste pour la réponse
+    response_data = {
+        "id": insight.id,
+        "study_id": insight.study_id,
+        "title": insight.title,
+        "summary": insight.summary,
+        "key_findings": insight.key_findings,
+        "recommendations": insight.recommendations,
+        "author": insight.author,
+        "images": json.loads(insight.images) if insight.images else [],
+        "is_published": insight.is_published,
+        "created_at": insight.created_at
+    }
+    
+    return response_data
 
 
 @app.delete("/api/insights/{insight_id}")
