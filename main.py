@@ -264,7 +264,6 @@ class AdminUserResponse(BaseModel):
     plan: str
     is_active: bool
     is_admin: bool
-    parent_user_id: Optional[int]
     created_at: datetime
     
     class Config:
