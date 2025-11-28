@@ -239,6 +239,49 @@ class LoginPendingResponse(BaseModel):
     email: str
     requires_verification: bool
 
+# ==================== ADMIN SCHEMAS ====================
+
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: Optional[str] = None  # Si vide, génère un mot de passe
+    plan: str = "basic"  # basic, professionnel, entreprise
+    is_active: bool = True
+    is_admin: bool = False
+    parent_user_id: Optional[int] = None  # Pour les sous-utilisateurs entreprise
+
+class AdminUserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    plan: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_admin: Optional[bool] = None
+
+class AdminUserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    plan: str
+    is_active: bool
+    is_admin: bool
+    parent_user_id: Optional[int]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class EnterpriseUserAdd(BaseModel):
+    email: EmailStr
+    full_name: str
+
+class DashboardStats(BaseModel):
+    studies_accessible: int
+    studies_participated: int
+    reports_downloaded: int
+    insights_viewed: int
+    subscription_days_remaining: Optional[int]
+    plan: str
+
 # ==================== HELPERS ====================
 
 def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
@@ -1061,6 +1104,374 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+# ==================== ADMIN - GESTION UTILISATEURS ====================
+
+@app.get("/api/admin/users", response_model=List[AdminUserResponse])
+async def admin_get_all_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Lister tous les utilisateurs (Admin seulement)
+    """
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    return users
+
+
+@app.post("/api/admin/users", response_model=AdminUserResponse)
+async def admin_create_user(
+    data: AdminUserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Créer un utilisateur manuellement (Admin seulement)
+    """
+    # Vérifier si l'email existe déjà
+    existing_user = db.query(User).filter(User.email == data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+    
+    # Générer un mot de passe si non fourni
+    password = data.password if data.password else secrets.token_urlsafe(12)
+    hashed_password = hash_password(password)
+    
+    # Créer l'utilisateur
+    new_user = User(
+        email=data.email,
+        full_name=data.full_name,
+        hashed_password=hashed_password,
+        plan=data.plan,
+        is_active=data.is_active,
+        is_admin=data.is_admin,
+        parent_user_id=data.parent_user_id
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Si c'est un abonnement payant, créer la subscription
+    if data.plan in ["professionnel", "entreprise"]:
+        new_subscription = Subscription(
+            user_id=new_user.id,
+            plan=data.plan,
+            status="active",
+            start_date=datetime.utcnow(),
+            end_date=datetime.utcnow() + timedelta(days=30)
+        )
+        db.add(new_subscription)
+        db.commit()
+    
+    # Envoyer email avec les identifiants
+    send_email(
+        to=new_user.email,
+        subject="🎉 Votre compte Afrikalytics a été créé",
+        html=f"""
+            <h2>Bienvenue sur Afrikalytics AI !</h2>
+            <p>Bonjour {new_user.full_name},</p>
+            <p>Votre compte a été créé avec succès.</p>
+            <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Email :</strong> {new_user.email}</p>
+                <p><strong>Mot de passe :</strong> {password}</p>
+                <p><strong>Plan :</strong> {new_user.plan.capitalize()}</p>
+            </div>
+            <p style="color: #e74c3c;">Nous vous recommandons de changer votre mot de passe après votre première connexion.</p>
+            <p style="margin: 30px 0;">
+                <a href="https://dashboard.afrikalytics.com/login" 
+                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Se connecter
+                </a>
+            </p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return new_user
+
+
+@app.put("/api/admin/users/{user_id}", response_model=AdminUserResponse)
+async def admin_update_user(
+    user_id: int,
+    data: AdminUserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Modifier un utilisateur (Admin seulement)
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    if data.email is not None:
+        # Vérifier si le nouvel email n'est pas déjà pris
+        existing = db.query(User).filter(User.email == data.email, User.id != user_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+        user.email = data.email
+    
+    if data.full_name is not None:
+        user.full_name = data.full_name
+    
+    if data.plan is not None:
+        user.plan = data.plan
+    
+    if data.is_active is not None:
+        user.is_active = data.is_active
+    
+    if data.is_admin is not None:
+        user.is_admin = data.is_admin
+    
+    db.commit()
+    db.refresh(user)
+    
+    return user
+
+
+@app.put("/api/admin/users/{user_id}/toggle-active")
+async def admin_toggle_user_active(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Activer/Désactiver un utilisateur (Admin seulement)
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    user.is_active = not user.is_active
+    db.commit()
+    
+    status = "activé" if user.is_active else "désactivé"
+    return {"message": f"Utilisateur {status}", "is_active": user.is_active}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer un utilisateur (Admin seulement)
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    # Ne pas permettre de se supprimer soi-même
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte")
+    
+    db.delete(user)
+    db.commit()
+    
+    return {"message": "Utilisateur supprimé avec succès"}
+
+
+# ==================== FORFAIT ENTREPRISE ====================
+
+@app.get("/api/enterprise/team")
+async def get_enterprise_team(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer les membres de l'équipe entreprise
+    """
+    if current_user.plan != "entreprise":
+        raise HTTPException(status_code=403, detail="Cette fonctionnalité est réservée au plan Entreprise")
+    
+    # Récupérer les sous-utilisateurs
+    team_members = db.query(User).filter(User.parent_user_id == current_user.id).all()
+    
+    return {
+        "owner": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "full_name": current_user.full_name
+        },
+        "team_members": [
+            {
+                "id": m.id,
+                "email": m.email,
+                "full_name": m.full_name,
+                "is_active": m.is_active,
+                "created_at": m.created_at.isoformat()
+            } for m in team_members
+        ],
+        "max_members": 5,
+        "current_count": len(team_members) + 1  # +1 pour le propriétaire
+    }
+
+
+@app.post("/api/enterprise/team/add")
+async def add_enterprise_team_member(
+    data: EnterpriseUserAdd,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Ajouter un membre à l'équipe entreprise (max 5 total)
+    """
+    if current_user.plan != "entreprise":
+        raise HTTPException(status_code=403, detail="Cette fonctionnalité est réservée au plan Entreprise")
+    
+    # Compter les membres actuels
+    current_members = db.query(User).filter(User.parent_user_id == current_user.id).count()
+    
+    if current_members >= 4:  # 4 membres + 1 propriétaire = 5 max
+        raise HTTPException(status_code=400, detail="Limite de 5 utilisateurs atteinte pour votre forfait Entreprise")
+    
+    # Vérifier si l'email existe déjà
+    existing_user = db.query(User).filter(User.email == data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+    
+    # Générer un mot de passe temporaire
+    temp_password = secrets.token_urlsafe(12)
+    hashed_password = hash_password(temp_password)
+    
+    # Créer le membre de l'équipe
+    new_member = User(
+        email=data.email,
+        full_name=data.full_name,
+        hashed_password=hashed_password,
+        plan="entreprise",
+        is_active=True,
+        parent_user_id=current_user.id
+    )
+    
+    db.add(new_member)
+    db.commit()
+    db.refresh(new_member)
+    
+    # Envoyer email d'invitation
+    send_email(
+        to=new_member.email,
+        subject="🎉 Vous êtes invité(e) à rejoindre Afrikalytics",
+        html=f"""
+            <h2>Bienvenue sur Afrikalytics AI !</h2>
+            <p>Bonjour {new_member.full_name},</p>
+            <p><strong>{current_user.full_name}</strong> vous a invité(e) à rejoindre son équipe sur Afrikalytics.</p>
+            <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Email :</strong> {new_member.email}</p>
+                <p><strong>Mot de passe temporaire :</strong> {temp_password}</p>
+                <p><strong>Plan :</strong> Entreprise</p>
+            </div>
+            <p style="color: #e74c3c;">Veuillez changer votre mot de passe après votre première connexion.</p>
+            <p style="margin: 30px 0;">
+                <a href="https://dashboard.afrikalytics.com/login" 
+                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Se connecter
+                </a>
+            </p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {
+        "message": "Membre ajouté avec succès",
+        "member": {
+            "id": new_member.id,
+            "email": new_member.email,
+            "full_name": new_member.full_name
+        }
+    }
+
+
+@app.delete("/api/enterprise/team/{member_id}")
+async def remove_enterprise_team_member(
+    member_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retirer un membre de l'équipe entreprise
+    """
+    if current_user.plan != "entreprise":
+        raise HTTPException(status_code=403, detail="Cette fonctionnalité est réservée au plan Entreprise")
+    
+    member = db.query(User).filter(
+        User.id == member_id,
+        User.parent_user_id == current_user.id
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Membre non trouvé dans votre équipe")
+    
+    db.delete(member)
+    db.commit()
+    
+    return {"message": "Membre retiré avec succès"}
+
+
+# ==================== DASHBOARD STATS ====================
+
+@app.get("/api/dashboard/stats")
+async def get_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer les statistiques du dashboard utilisateur
+    """
+    # Études accessibles (actives)
+    studies_accessible = db.query(Study).filter(Study.is_active == True).count()
+    
+    # Études auxquelles l'utilisateur peut accéder selon son plan
+    if current_user.plan == "basic":
+        # Basic : seulement études ouvertes à la participation
+        studies_count = db.query(Study).filter(
+            Study.is_active == True,
+            Study.status == "Ouvert"
+        ).count()
+    else:
+        # Premium : toutes les études actives
+        studies_count = studies_accessible
+    
+    # Jours restants d'abonnement
+    days_remaining = None
+    if current_user.plan in ["professionnel", "entreprise"]:
+        subscription = db.query(Subscription).filter(
+            Subscription.user_id == current_user.id,
+            Subscription.status == "active"
+        ).first()
+        
+        if subscription and subscription.end_date:
+            end_date = subscription.end_date.date() if hasattr(subscription.end_date, 'date') else subscription.end_date
+            days_remaining = (end_date - datetime.utcnow().date()).days
+            if days_remaining < 0:
+                days_remaining = 0
+    
+    # Rapports disponibles selon le plan
+    if current_user.plan == "basic":
+        reports_count = db.query(Report).filter(Report.report_type == "basic").count()
+    else:
+        reports_count = db.query(Report).count()
+    
+    # Insights disponibles selon le plan
+    if current_user.plan == "basic":
+        insights_count = db.query(Insight).filter(Insight.is_premium == False).count()
+    else:
+        insights_count = db.query(Insight).count()
+    
+    return {
+        "studies_accessible": studies_count,
+        "studies_total": studies_accessible,
+        "reports_available": reports_count,
+        "insights_available": insights_count,
+        "subscription_days_remaining": days_remaining,
+        "plan": current_user.plan,
+        "is_premium": current_user.plan in ["professionnel", "entreprise"]
+    }
+
+
 # ==================== ÉTUDES (CRUD) ====================
 
 @app.get("/api/studies", response_model=List[StudyResponse])
@@ -1827,6 +2238,229 @@ async def get_my_subscription(
         "end_date": subscription.end_date.isoformat() if subscription.end_date else None,
         "days_remaining": days_remaining
     }
+
+
+# ==================== ADMIN - GESTION UTILISATEURS ====================
+
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+    plan: str = "basic"
+    is_active: bool = True
+    is_admin: bool = False
+
+class AdminUserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    plan: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_admin: Optional[bool] = None
+    new_password: Optional[str] = None
+
+class AdminUserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    plan: str
+    is_active: bool
+    is_admin: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+@app.get("/api/admin/users", response_model=List[AdminUserResponse])
+async def get_all_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer tous les utilisateurs (Admin seulement)
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    return users
+
+
+@app.get("/api/admin/users/{user_id}", response_model=AdminUserResponse)
+async def get_user_by_id(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer un utilisateur par son ID (Admin seulement)
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    return user
+
+
+@app.post("/api/admin/users", response_model=AdminUserResponse)
+async def create_user_admin(
+    data: AdminUserCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Créer un utilisateur manuellement (Admin seulement)
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    # Vérifier si l'email existe déjà
+    existing_user = db.query(User).filter(User.email == data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+    
+    # Créer l'utilisateur
+    hashed_password = hash_password(data.password)
+    
+    new_user = User(
+        email=data.email,
+        full_name=data.full_name,
+        hashed_password=hashed_password,
+        plan=data.plan,
+        is_active=data.is_active,
+        is_admin=data.is_admin
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Envoyer email de bienvenue
+    send_email(
+        to=new_user.email,
+        subject="Bienvenue sur Afrikalytics AI",
+        html=f"""
+            <h2>Bienvenue sur Afrikalytics AI !</h2>
+            <p>Bonjour {new_user.full_name},</p>
+            <p>Votre compte a été créé avec succès.</p>
+            <p><strong>Email :</strong> {new_user.email}</p>
+            <p><strong>Mot de passe :</strong> {data.password}</p>
+            <p><strong>Plan :</strong> {new_user.plan.capitalize()}</p>
+            <p style="margin: 30px 0;">
+                <a href="https://dashboard.afrikalytics.com/login" 
+                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Se connecter
+                </a>
+            </p>
+            <p style="color: #666;">Nous vous recommandons de changer votre mot de passe après votre première connexion.</p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return new_user
+
+
+@app.put("/api/admin/users/{user_id}", response_model=AdminUserResponse)
+async def update_user_admin(
+    user_id: int,
+    data: AdminUserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Modifier un utilisateur (Admin seulement)
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    # Mettre à jour les champs fournis
+    if data.email is not None:
+        # Vérifier si l'email est déjà utilisé par un autre utilisateur
+        existing = db.query(User).filter(User.email == data.email, User.id != user_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+        user.email = data.email
+    
+    if data.full_name is not None:
+        user.full_name = data.full_name
+    
+    if data.plan is not None:
+        user.plan = data.plan
+    
+    if data.is_active is not None:
+        user.is_active = data.is_active
+    
+    if data.is_admin is not None:
+        user.is_admin = data.is_admin
+    
+    if data.new_password is not None and len(data.new_password) >= 8:
+        user.hashed_password = hash_password(data.new_password)
+    
+    db.commit()
+    db.refresh(user)
+    
+    return user
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def delete_user_admin(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer un utilisateur (Admin seulement)
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    # Empêcher de supprimer son propre compte
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    # Supprimer les subscriptions associées
+    db.query(Subscription).filter(Subscription.user_id == user_id).delete()
+    
+    # Supprimer l'utilisateur
+    db.delete(user)
+    db.commit()
+    
+    return {"message": "Utilisateur supprimé avec succès"}
+
+
+@app.put("/api/admin/users/{user_id}/toggle-active")
+async def toggle_user_active(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Activer/Désactiver un utilisateur (Admin seulement)
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    user.is_active = not user.is_active
+    db.commit()
+    
+    status = "activé" if user.is_active else "désactivé"
+    return {"message": f"Utilisateur {status}", "is_active": user.is_active}
 
 
 if __name__ == "__main__":
