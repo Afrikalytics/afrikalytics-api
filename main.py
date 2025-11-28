@@ -1460,9 +1460,16 @@ async def get_dashboard_stats(
     else:
         insights_count = db.query(Insight).count()
     
+    # Études ouvertes (status = "Ouvert")
+    studies_open = db.query(Study).filter(
+        Study.is_active == True,
+        Study.status == "Ouvert"
+    ).count()
+    
     return {
         "studies_accessible": studies_count,
         "studies_total": studies_accessible,
+        "studies_open": studies_open,
         "reports_available": reports_count,
         "insights_available": insights_count,
         "subscription_days_remaining": days_remaining,
