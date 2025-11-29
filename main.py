@@ -101,6 +101,7 @@ class UserResponse(BaseModel):
     plan: str
     is_active: bool
     is_admin: bool = False
+    parent_user_id: Optional[int] = None  # null = propriétaire, sinon = membre invité
     created_at: datetime
 
     class Config:
@@ -1282,10 +1283,14 @@ async def get_enterprise_team(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Récupérer les membres de l'équipe entreprise
+    Récupérer les membres de l'équipe entreprise (propriétaire uniquement)
     """
     if current_user.plan != "entreprise":
         raise HTTPException(status_code=403, detail="Cette fonctionnalité est réservée au plan Entreprise")
+    
+    # Seul le propriétaire peut gérer l'équipe (pas les membres invités)
+    if current_user.parent_user_id is not None:
+        raise HTTPException(status_code=403, detail="Seul le propriétaire du compte peut gérer l'équipe")
     
     # Récupérer les sous-utilisateurs
     team_members = db.query(User).filter(User.parent_user_id == current_user.id).all()
@@ -1317,10 +1322,15 @@ async def add_enterprise_team_member(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Ajouter un membre à l'équipe entreprise (max 5 total)
+    Ajouter un membre à l'équipe entreprise (max 5 total, propriétaire uniquement)
+    Gère les cas : nouveau compte, utilisateur Basic existant, utilisateur Pro existant
     """
     if current_user.plan != "entreprise":
         raise HTTPException(status_code=403, detail="Cette fonctionnalité est réservée au plan Entreprise")
+    
+    # Seul le propriétaire peut ajouter des membres
+    if current_user.parent_user_id is not None:
+        raise HTTPException(status_code=403, detail="Seul le propriétaire du compte peut ajouter des membres")
     
     # Compter les membres actuels
     current_members = db.query(User).filter(User.parent_user_id == current_user.id).count()
@@ -1330,14 +1340,81 @@ async def add_enterprise_team_member(
     
     # Vérifier si l'email existe déjà
     existing_user = db.query(User).filter(User.email == data.email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
     
-    # Générer un mot de passe temporaire
+    if existing_user:
+        # CAS : Utilisateur déjà dans une équipe entreprise (propriétaire ou membre)
+        if existing_user.plan == "entreprise":
+            if existing_user.parent_user_id is None:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cet utilisateur est déjà propriétaire d'une équipe Entreprise"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cet utilisateur fait déjà partie d'une équipe Entreprise"
+                )
+        
+        # CAS : Utilisateur Basic ou Professionnel → Peut rejoindre l'équipe
+        old_plan = existing_user.plan
+        
+        # Si l'utilisateur avait un abonnement Professionnel, on l'annule
+        if old_plan == "professionnel":
+            active_subscription = db.query(Subscription).filter(
+                Subscription.user_id == existing_user.id,
+                Subscription.status == "active"
+            ).first()
+            
+            if active_subscription:
+                active_subscription.status = "cancelled"
+                active_subscription.end_date = datetime.utcnow()
+        
+        # Mettre à jour l'utilisateur existant
+        existing_user.plan = "entreprise"
+        existing_user.parent_user_id = current_user.id
+        
+        db.commit()
+        db.refresh(existing_user)
+        
+        # Email différent pour utilisateur existant (il garde son mot de passe)
+        send_email(
+            to=existing_user.email,
+            subject="🎉 Vous avez rejoint une équipe Entreprise sur Afrikalytics",
+            html=f"""
+                <h2>Bonne nouvelle !</h2>
+                <p>Bonjour {existing_user.full_name},</p>
+                <p><strong>{current_user.full_name}</strong> vous a ajouté(e) à son équipe Entreprise sur Afrikalytics.</p>
+                <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                    <p><strong>Votre nouveau plan :</strong> Entreprise</p>
+                    <p><strong>Ancien plan :</strong> {old_plan.capitalize()}</p>
+                    {"<p style='color: #e74c3c;'><strong>Note :</strong> Votre abonnement Professionnel a été annulé.</p>" if old_plan == "professionnel" else ""}
+                </div>
+                <p>Vous pouvez continuer à utiliser votre compte avec vos identifiants habituels.</p>
+                <p style="margin: 30px 0;">
+                    <a href="https://dashboard.afrikalytics.com/login" 
+                       style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                        Accéder au dashboard
+                    </a>
+                </p>
+                <hr>
+                <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+            """
+        )
+        
+        return {
+            "message": f"Membre ajouté avec succès (compte existant converti de {old_plan} à entreprise)",
+            "member": {
+                "id": existing_user.id,
+                "email": existing_user.email,
+                "full_name": existing_user.full_name
+            },
+            "converted_from": old_plan
+        }
+    
+    # CAS : Nouveau compte → Créer le membre
     temp_password = secrets.token_urlsafe(12)
     hashed_password = hash_password(temp_password)
     
-    # Créer le membre de l'équipe
     new_member = User(
         email=data.email,
         full_name=data.full_name,
@@ -1351,7 +1428,7 @@ async def add_enterprise_team_member(
     db.commit()
     db.refresh(new_member)
     
-    # Envoyer email d'invitation
+    # Email pour nouveau compte
     send_email(
         to=new_member.email,
         subject="🎉 Vous êtes invité(e) à rejoindre Afrikalytics",
@@ -1377,12 +1454,13 @@ async def add_enterprise_team_member(
     )
     
     return {
-        "message": "Membre ajouté avec succès",
+        "message": "Membre ajouté avec succès (nouveau compte créé)",
         "member": {
             "id": new_member.id,
             "email": new_member.email,
             "full_name": new_member.full_name
-        }
+        },
+        "new_account": True
     }
 
 
@@ -1393,10 +1471,15 @@ async def remove_enterprise_team_member(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Retirer un membre de l'équipe entreprise
+    Retirer un membre de l'équipe entreprise (propriétaire uniquement)
+    Le membre est rétrogradé vers le plan Basic (pas supprimé)
     """
     if current_user.plan != "entreprise":
         raise HTTPException(status_code=403, detail="Cette fonctionnalité est réservée au plan Entreprise")
+    
+    # Seul le propriétaire peut retirer des membres
+    if current_user.parent_user_id is not None:
+        raise HTTPException(status_code=403, detail="Seul le propriétaire du compte peut retirer des membres")
     
     member = db.query(User).filter(
         User.id == member_id,
@@ -1406,10 +1489,44 @@ async def remove_enterprise_team_member(
     if not member:
         raise HTTPException(status_code=404, detail="Membre non trouvé dans votre équipe")
     
-    db.delete(member)
+    member_name = member.full_name
+    member_email = member.email
+    
+    # Rétrograder vers Basic au lieu de supprimer
+    member.plan = "basic"
+    member.parent_user_id = None
+    
     db.commit()
     
-    return {"message": "Membre retiré avec succès"}
+    # Notifier le membre par email
+    send_email(
+        to=member_email,
+        subject="Modification de votre accès Afrikalytics",
+        html=f"""
+            <h2>Changement de votre plan</h2>
+            <p>Bonjour {member_name},</p>
+            <p>Vous avez été retiré(e) de l'équipe Entreprise de <strong>{current_user.full_name}</strong> sur Afrikalytics.</p>
+            <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Votre nouveau plan :</strong> Basic (gratuit)</p>
+                <p>Votre compte reste actif et vous pouvez toujours vous connecter.</p>
+            </div>
+            <p>Si vous souhaitez accéder aux fonctionnalités Premium, vous pouvez souscrire à un abonnement individuel.</p>
+            <p style="margin: 30px 0;">
+                <a href="https://afrikalytics.com/premium" 
+                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Voir les offres
+                </a>
+            </p>
+            <hr>
+            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+        """
+    )
+    
+    return {
+        "message": f"Membre retiré avec succès. {member_name} a été rétrogradé vers le plan Basic.",
+        "member_id": member_id,
+        "new_plan": "basic"
+    }
 
 
 # ==================== DASHBOARD STATS ====================
@@ -2225,6 +2342,39 @@ async def check_subscription_expiry(
             elif days_remaining < 0:
                 # Mettre à jour l'abonnement
                 sub.status = "expired"
+                
+                # Si c'est un propriétaire Entreprise, rétrograder aussi tous ses membres
+                if user.plan == "entreprise" and user.parent_user_id is None:
+                    team_members = db.query(User).filter(User.parent_user_id == user.id).all()
+                    for member in team_members:
+                        member.plan = "basic"
+                        member.parent_user_id = None
+                        # Notifier chaque membre
+                        send_email(
+                            to=member.email,
+                            subject="😢 L'abonnement Entreprise de votre équipe a expiré",
+                            html=f"""
+                                <h2>Bonjour {member.full_name},</h2>
+                                <p>L'abonnement Entreprise de <strong>{user.full_name}</strong> a expiré.</p>
+                                <p>Votre compte a été rétrogradé au <strong>Plan Basic (gratuit)</strong>.</p>
+                                <p>Vous conservez l'accès à :</p>
+                                <ul>
+                                    <li>✅ Participation aux études</li>
+                                    <li>✅ Aperçu des insights</li>
+                                    <li>✅ Dashboard basic</li>
+                                </ul>
+                                <p>Vous n'avez plus accès aux fonctionnalités Premium.</p>
+                                <p>Si vous souhaitez continuer avec un abonnement individuel :</p>
+                                <p style="margin: 30px 0;">
+                                    <a href="https://afrikalytics.com/premium" 
+                                       style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                                        Voir les offres Premium
+                                    </a>
+                                </p>
+                                <hr>
+                                <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
+                            """
+                        )
                 
                 # Rétrograder l'utilisateur vers Basic
                 user.plan = "basic"
