@@ -1377,7 +1377,8 @@ async def add_enterprise_team_member(
         db.refresh(existing_user)
         
         # Email différent pour utilisateur existant (il garde son mot de passe)
-        send_email(
+        print(f"[DEBUG] Envoi email à utilisateur existant: {existing_user.email}")
+        email_sent = send_email(
             to=existing_user.email,
             subject="🎉 Vous avez rejoint une équipe Entreprise sur Afrikalytics",
             html=f"""
@@ -1400,6 +1401,7 @@ async def add_enterprise_team_member(
                 <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
             """
         )
+        print(f"[DEBUG] Email envoyé: {email_sent}")
         
         return {
             "message": f"Membre ajouté avec succès (compte existant converti de {old_plan} à entreprise)",
@@ -1408,7 +1410,8 @@ async def add_enterprise_team_member(
                 "email": existing_user.email,
                 "full_name": existing_user.full_name
             },
-            "converted_from": old_plan
+            "converted_from": old_plan,
+            "email_sent": email_sent
         }
     
     # CAS : Nouveau compte → Créer le membre
