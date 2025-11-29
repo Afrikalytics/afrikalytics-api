@@ -47,6 +47,75 @@ PAYDUNYA_PRIVATE_KEY = os.getenv("PAYDUNYA_PRIVATE_KEY", "")
 PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
 PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")  # test ou live
 
+# ==================== PERMISSIONS ADMIN ====================
+# Définition des rôles et leurs permissions
+ADMIN_ROLES = {
+    "super_admin": {
+        "label": "Super Admin",
+        "studies": True,
+        "insights": True,
+        "reports": True,
+        "users": True
+    },
+    "admin_content": {
+        "label": "Admin Contenu",
+        "studies": True,
+        "insights": True,
+        "reports": True,
+        "users": False
+    },
+    "admin_studies": {
+        "label": "Admin Études",
+        "studies": True,
+        "insights": False,
+        "reports": False,
+        "users": False
+    },
+    "admin_insights": {
+        "label": "Admin Insights",
+        "studies": False,
+        "insights": True,
+        "reports": False,
+        "users": False
+    },
+    "admin_reports": {
+        "label": "Admin Rapports",
+        "studies": False,
+        "insights": False,
+        "reports": True,
+        "users": False
+    }
+}
+
+def check_admin_permission(user, permission: str) -> bool:
+    """
+    Vérifie si un utilisateur admin a une permission spécifique
+    permission: 'studies', 'insights', 'reports', 'users'
+    """
+    if not user.is_admin:
+        return False
+    
+    # Si pas de rôle défini, super_admin par défaut (rétrocompatibilité)
+    role = user.admin_role or "super_admin"
+    
+    if role not in ADMIN_ROLES:
+        return False
+    
+    return ADMIN_ROLES[role].get(permission, False)
+
+def require_admin_permission(permission: str):
+    """
+    Decorator helper pour vérifier une permission admin
+    """
+    def check_permission(current_user: User):
+        if not check_admin_permission(current_user, permission):
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Vous n'avez pas la permission de gérer les {permission}"
+            )
+        return current_user
+    return check_permission
+
 # Configurer Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 
@@ -101,6 +170,7 @@ class UserResponse(BaseModel):
     plan: str
     is_active: bool
     is_admin: bool = False
+    admin_role: Optional[str] = None  # super_admin, admin_content, admin_studies, admin_insights, admin_reports
     parent_user_id: Optional[int] = None  # null = propriétaire, sinon = membre invité
     created_at: datetime
 
@@ -251,6 +321,7 @@ class AdminUserCreate(BaseModel):
     plan: str = "basic"  # basic, professionnel, entreprise
     is_active: bool = True
     is_admin: bool = False
+    admin_role: Optional[str] = None  # super_admin, admin_content, admin_studies, admin_insights, admin_reports
     parent_user_id: Optional[int] = None  # Pour les sous-utilisateurs entreprise
 
 class AdminUserUpdate(BaseModel):
@@ -259,6 +330,8 @@ class AdminUserUpdate(BaseModel):
     plan: Optional[str] = None
     is_active: Optional[bool] = None
     is_admin: Optional[bool] = None
+    admin_role: Optional[str] = None  # super_admin, admin_content, admin_studies, admin_insights, admin_reports
+    new_password: Optional[str] = None
 
 class AdminUserResponse(BaseModel):
     id: int
@@ -267,6 +340,7 @@ class AdminUserResponse(BaseModel):
     plan: str
     is_active: bool
     is_admin: bool
+    admin_role: Optional[str] = None
     created_at: datetime
     
     class Config:
@@ -1638,8 +1712,11 @@ async def create_study(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Créer une nouvelle étude (Admin seulement)
+    Créer une nouvelle étude (Admin avec permission studies)
     """
+    if not check_admin_permission(current_user, "studies"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les études")
+    
     new_study = Study(
         title=data.title,
         description=data.description,
@@ -1671,8 +1748,11 @@ async def update_study(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Modifier une étude (Admin seulement)
+    Modifier une étude (Admin avec permission studies)
     """
+    if not check_admin_permission(current_user, "studies"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les études")
+    
     study = db.query(Study).filter(Study.id == study_id).first()
     if not study:
         raise HTTPException(status_code=404, detail="Étude non trouvée")
@@ -1704,8 +1784,11 @@ async def delete_study(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Supprimer une étude (Admin seulement)
+    Supprimer une étude (Admin avec permission studies)
     """
+    if not check_admin_permission(current_user, "studies"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les études")
+    
     study = db.query(Study).filter(Study.id == study_id).first()
     if not study:
         raise HTTPException(status_code=404, detail="Étude non trouvée")
@@ -1773,8 +1856,11 @@ async def create_insight(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Créer un nouvel insight (Admin seulement)
+    Créer un nouvel insight (Admin avec permission insights)
     """
+    if not check_admin_permission(current_user, "insights"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les insights")
+    
     import json
     
     # Convertir la liste d'images en JSON string pour stockage
@@ -1820,8 +1906,11 @@ async def update_insight(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Modifier un insight (Admin seulement)
+    Modifier un insight (Admin avec permission insights)
     """
+    if not check_admin_permission(current_user, "insights"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les insights")
+    
     import json
     
     insight = db.query(Insight).filter(Insight.id == insight_id).first()
@@ -1867,8 +1956,11 @@ async def delete_insight(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Supprimer un insight (Admin seulement)
+    Supprimer un insight (Admin avec permission insights)
     """
+    if not check_admin_permission(current_user, "insights"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les insights")
+    
     insight = db.query(Insight).filter(Insight.id == insight_id).first()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight non trouvé")
@@ -1934,8 +2026,11 @@ async def create_report(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Créer un nouveau rapport (Admin seulement)
+    Créer un nouveau rapport (Admin avec permission reports)
     """
+    if not check_admin_permission(current_user, "reports"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les rapports")
+    
     new_report = Report(
         study_id=data.study_id,
         title=data.title,
@@ -1962,8 +2057,11 @@ async def update_report(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Modifier un rapport (Admin seulement)
+    Modifier un rapport (Admin avec permission reports)
     """
+    if not check_admin_permission(current_user, "reports"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les rapports")
+    
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
@@ -1990,9 +2088,12 @@ async def delete_report(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Supprimer un rapport (Admin seulement)
+    Supprimer un rapport (Admin avec permission reports)
     Supprime aussi les URLs dans la table studies
     """
+    if not check_admin_permission(current_user, "reports"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les rapports")
+    
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
@@ -2460,33 +2561,22 @@ async def get_my_subscription(
 
 # ==================== ADMIN - GESTION UTILISATEURS ====================
 
-class AdminUserCreate(BaseModel):
-    email: EmailStr
-    full_name: str
-    password: str
-    plan: str = "basic"
-    is_active: bool = True
-    is_admin: bool = False
-
-class AdminUserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    full_name: Optional[str] = None
-    plan: Optional[str] = None
-    is_active: Optional[bool] = None
-    is_admin: Optional[bool] = None
-    new_password: Optional[str] = None
-
-class AdminUserResponse(BaseModel):
-    id: int
-    email: str
-    full_name: str
-    plan: str
-    is_active: bool
-    is_admin: bool
-    created_at: datetime
+@app.get("/api/admin/roles")
+async def get_admin_roles(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer la liste des rôles admin disponibles
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
     
-    class Config:
-        from_attributes = True
+    return {
+        "roles": [
+            {"code": code, "label": info["label"], "permissions": {k: v for k, v in info.items() if k != "label"}}
+            for code, info in ADMIN_ROLES.items()
+        ]
+    }
 
 
 @app.get("/api/admin/users", response_model=List[AdminUserResponse])
@@ -2495,10 +2585,10 @@ async def get_all_users(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Récupérer tous les utilisateurs (Admin seulement)
+    Récupérer tous les utilisateurs (Admin avec permission users)
     """
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les utilisateurs")
     
     users = db.query(User).order_by(User.created_at.desc()).all()
     return users
@@ -2511,10 +2601,10 @@ async def get_user_by_id(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Récupérer un utilisateur par son ID (Admin seulement)
+    Récupérer un utilisateur par son ID (Admin avec permission users)
     """
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les utilisateurs")
     
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -2530,18 +2620,23 @@ async def create_user_admin(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Créer un utilisateur manuellement (Admin seulement)
+    Créer un utilisateur manuellement (Admin avec permission users)
     """
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les utilisateurs")
     
     # Vérifier si l'email existe déjà
     existing_user = db.query(User).filter(User.email == data.email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
     
-    # Créer l'utilisateur
-    hashed_password = hash_password(data.password)
+    # Générer mot de passe si non fourni
+    password = data.password or secrets.token_urlsafe(12)
+    hashed_password = hash_password(password)
+    
+    # Valider admin_role si fourni
+    if data.admin_role and data.admin_role not in ADMIN_ROLES:
+        raise HTTPException(status_code=400, detail=f"Rôle admin invalide. Valeurs possibles: {list(ADMIN_ROLES.keys())}")
     
     new_user = User(
         email=data.email,
@@ -2549,7 +2644,8 @@ async def create_user_admin(
         hashed_password=hashed_password,
         plan=data.plan,
         is_active=data.is_active,
-        is_admin=data.is_admin
+        is_admin=data.is_admin,
+        admin_role=data.admin_role if data.is_admin else None
     )
     
     db.add(new_user)
@@ -2565,7 +2661,7 @@ async def create_user_admin(
             <p>Bonjour {new_user.full_name},</p>
             <p>Votre compte a été créé avec succès.</p>
             <p><strong>Email :</strong> {new_user.email}</p>
-            <p><strong>Mot de passe :</strong> {data.password}</p>
+            <p><strong>Mot de passe :</strong> {password}</p>
             <p><strong>Plan :</strong> {new_user.plan.capitalize()}</p>
             <p style="margin: 30px 0;">
                 <a href="https://dashboard.afrikalytics.com/login" 
@@ -2590,10 +2686,10 @@ async def update_user_admin(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Modifier un utilisateur (Admin seulement)
+    Modifier un utilisateur (Admin avec permission users)
     """
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les utilisateurs")
     
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -2618,6 +2714,15 @@ async def update_user_admin(
     
     if data.is_admin is not None:
         user.is_admin = data.is_admin
+        # Si on retire les droits admin, effacer le rôle
+        if not data.is_admin:
+            user.admin_role = None
+    
+    if data.admin_role is not None:
+        if data.admin_role not in ADMIN_ROLES:
+            raise HTTPException(status_code=400, detail=f"Rôle admin invalide. Valeurs possibles: {list(ADMIN_ROLES.keys())}")
+        user.admin_role = data.admin_role
+        user.is_admin = True  # Activer admin si un rôle est défini
     
     if data.new_password is not None and len(data.new_password) >= 8:
         user.hashed_password = hash_password(data.new_password)
@@ -2635,10 +2740,10 @@ async def delete_user_admin(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Supprimer un utilisateur (Admin seulement)
+    Supprimer un utilisateur (Admin avec permission users)
     """
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(status_code=403, detail="Vous n'avez pas la permission de gérer les utilisateurs")
     
     # Empêcher de supprimer son propre compte
     if user_id == current_user.id:

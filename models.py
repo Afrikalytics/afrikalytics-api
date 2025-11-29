@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey
 from sqlalchemy.sql import func
 from database import Base
 
@@ -14,9 +14,10 @@ class User(Base):
     order_id = Column(String(100), nullable=True)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
+    admin_role = Column(String(50), nullable=True)  # super_admin, admin_content, admin_studies, admin_insights, admin_reports
+    parent_user_id = Column(Integer, nullable=True)  # Pour les sous-utilisateurs entreprise
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    parent_user_id = Column(Integer, nullable=True)  # Pour les sous-utilisateurs entreprise
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -36,8 +37,6 @@ class Study(Base):
     embed_url_particulier = Column(String(500), nullable=True)  # URL iframe sondage particulier
     embed_url_entreprise = Column(String(500), nullable=True)  # URL iframe sondage entreprise
     embed_url_results = Column(String(500), nullable=True)  # URL iframe résultats (dashboard)
-    report_url_basic = Column(String(500), nullable=True)  # URL rapport PDF Basic
-    report_url_premium = Column(String(500), nullable=True)  # URL rapport PDF Premium
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -66,16 +65,15 @@ class Insight(Base):
     __tablename__ = "insights"
 
     id = Column(Integer, primary_key=True, index=True)
-    study_id = Column(Integer, index=True, nullable=False)
+    study_id = Column(Integer, ForeignKey("studies.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
-    summary = Column(Text, nullable=True)
+    summary = Column(Text, nullable=False)
     key_findings = Column(Text, nullable=True)
     recommendations = Column(Text, nullable=True)
     author = Column(String(255), nullable=True)
-    is_published = Column(Boolean, default=False)
+    is_published = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    images = Column(Text, nullable=True)  # JSON array of image URLs
 
     def __repr__(self):
         return f"<Insight {self.title}>"
@@ -85,32 +83,16 @@ class Report(Base):
     __tablename__ = "reports"
 
     id = Column(Integer, primary_key=True, index=True)
-    study_id = Column(Integer, index=True, nullable=False)
+    study_id = Column(Integer, ForeignKey("studies.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     file_url = Column(String(500), nullable=False)
     file_name = Column(String(255), nullable=True)
     file_size = Column(String(50), nullable=True)
-    report_type = Column(String(50), default="premium")  # basic, premium
     download_count = Column(Integer, default=0)
-    is_available = Column(Boolean, default=True)
+    is_available = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     def __repr__(self):
         return f"<Report {self.title}>"
-
-
-class Contact(Base):
-    __tablename__ = "contacts"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=False)
-    company = Column(String(255), nullable=True)
-    message = Column(Text, nullable=False)
-    is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    def __repr__(self):
-        return f"<Contact {self.name} - {self.email}>"
