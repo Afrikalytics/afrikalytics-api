@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import desc, or_, func
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from pydantic import BaseModel, EmailStr
@@ -13,6 +14,7 @@ import resend
 import hashlib
 import hmac
 import random
+import json
 
 # Rate limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -20,7 +22,11 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from database import get_db, engine
-from models import Base, User, Study, Insight, Report, Contact, Subscription
+from models import (
+    Base, User, Study, Subscription,
+    BlogPost, NewsletterSubscriber, NewsletterCampaign,
+    generate_slug, ensure_unique_slug, BLOG_CATEGORIES
+)
 from auth import hash_password, verify_password, create_access_token, decode_access_token
 
 # Modèle pour les codes de vérification 2FA
@@ -216,6 +222,280 @@ class StudyResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+        # ================================================================
+# SCHEMAS BLOG - À AJOUTER DANS main.py (ou créer blog_schemas.py)
+# ================================================================
+# Ces schemas sont à ajouter dans votre fichier main.py
+# APRÈS les schemas existants (UserCreate, UserLogin, etc.)
+# ================================================================
+
+from pydantic import BaseModel, EmailStr, Field, validator
+from typing import Optional, List
+from datetime import datetime
+
+
+# ================================================================
+# SCHEMAS BLOG POST
+# ================================================================
+
+class BlogPostCreate(BaseModel):
+    """Schema pour créer un article"""
+    title: str = Field(..., min_length=1, max_length=255)
+    slug: Optional[str] = Field(None, max_length=255)
+    excerpt: Optional[str] = None
+    content: str = Field(..., min_length=1)
+    featured_image: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = []
+    status: Optional[str] = "draft"  # draft, published, scheduled
+    scheduled_at: Optional[datetime] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    og_image: Optional[str] = None
+    
+    @validator('status')
+    def validate_status(cls, v):
+        allowed = ['draft', 'published', 'scheduled']
+        if v not in allowed:
+            raise ValueError(f'Status must be one of: {allowed}')
+        return v
+    
+    @validator('tags', pre=True)
+    def validate_tags(cls, v):
+        if isinstance(v, str):
+            import json
+            try:
+                return json.loads(v)
+            except:
+                return []
+        return v if v else []
+
+
+class BlogPostUpdate(BaseModel):
+    """Schema pour modifier un article"""
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    slug: Optional[str] = Field(None, max_length=255)
+    excerpt: Optional[str] = None
+    content: Optional[str] = None
+    featured_image: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    status: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    og_image: Optional[str] = None
+    
+    @validator('status')
+    def validate_status(cls, v):
+        if v is not None:
+            allowed = ['draft', 'published', 'scheduled']
+            if v not in allowed:
+                raise ValueError(f'Status must be one of: {allowed}')
+        return v
+
+
+class BlogPostResponse(BaseModel):
+    """Schema de réponse pour un article"""
+    id: int
+    title: str
+    slug: str
+    excerpt: Optional[str]
+    content: str
+    featured_image: Optional[str]
+    category: Optional[str]
+    tags: Optional[List[str]]
+    author_id: int
+    author_name: Optional[str] = None  # Ajouté via jointure
+    status: str
+    published_at: Optional[datetime]
+    scheduled_at: Optional[datetime]
+    meta_title: Optional[str]
+    meta_description: Optional[str]
+    og_image: Optional[str]
+    views: int
+    reading_time: Optional[int]
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+    
+    @validator('tags', pre=True)
+    def parse_tags(cls, v):
+        if isinstance(v, str):
+            import json
+            try:
+                return json.loads(v)
+            except:
+                return []
+        return v if v else []
+
+
+class BlogPostPublic(BaseModel):
+    """Schema public (sans info admin)"""
+    id: int
+    title: str
+    slug: str
+    excerpt: Optional[str]
+    content: str
+    featured_image: Optional[str]
+    category: Optional[str]
+    tags: Optional[List[str]]
+    author_name: Optional[str]
+    published_at: Optional[datetime]
+    meta_title: Optional[str]
+    meta_description: Optional[str]
+    og_image: Optional[str]
+    views: int
+    reading_time: Optional[int]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+    
+    @validator('tags', pre=True)
+    def parse_tags(cls, v):
+        if isinstance(v, str):
+            import json
+            try:
+                return json.loads(v)
+            except:
+                return []
+        return v if v else []
+
+
+class BlogPostListResponse(BaseModel):
+    """Schema pour la liste paginée"""
+    items: List[BlogPostResponse]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+class BlogPostPublicListResponse(BaseModel):
+    """Schema pour la liste publique paginée"""
+    items: List[BlogPostPublic]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
+
+# ================================================================
+# SCHEMAS NEWSLETTER
+# ================================================================
+
+class NewsletterSubscribe(BaseModel):
+    """Schema pour s'abonner à la newsletter"""
+    email: EmailStr
+    source: Optional[str] = "blog_footer"
+
+
+class NewsletterSubscriberResponse(BaseModel):
+    """Schema de réponse pour un abonné"""
+    id: int
+    email: str
+    status: str
+    is_confirmed: bool
+    source: str
+    subscribed_at: datetime
+    confirmed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class NewsletterCampaignCreate(BaseModel):
+    """Schema pour créer une campagne newsletter"""
+    blog_post_id: Optional[int] = None
+    subject: str = Field(..., min_length=1, max_length=255)
+    preview_text: Optional[str] = None
+    status: Optional[str] = "draft"
+    scheduled_at: Optional[datetime] = None
+
+
+class NewsletterCampaignResponse(BaseModel):
+    """Schema de réponse pour une campagne"""
+    id: int
+    blog_post_id: Optional[int]
+    subject: str
+    preview_text: Optional[str]
+    status: str
+    sent_at: Optional[datetime]
+    scheduled_at: Optional[datetime]
+    recipients_count: int
+    opened_count: int
+    clicked_count: int
+    created_at: datetime
+    open_rate: float
+    click_rate: float
+
+    class Config:
+        from_attributes = True
+
+
+# ================================================================
+# SCHEMAS DIVERS
+# ================================================================
+
+class CategoryResponse(BaseModel):
+    """Schema pour une catégorie"""
+    name: str
+    count: int
+
+
+class PopularPostResponse(BaseModel):
+    """Schema pour les articles populaires"""
+    id: int
+    title: str
+    slug: str
+    excerpt: Optional[str]
+    featured_image: Optional[str]
+    category: Optional[str]
+    views: int
+    published_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class SearchResponse(BaseModel):
+    """Schema pour les résultats de recherche"""
+    items: List[BlogPostPublic]
+    total: int
+    query: str
+
+
+# ================================================================
+# MESSAGES DE RÉPONSE
+# ================================================================
+
+class MessageResponse(BaseModel):
+    """Schema pour les messages simples"""
+    message: str
+    detail: Optional[str] = None
+
+
+# ================================================================
+# CONSTANTES
+# ================================================================
+
+BLOG_CATEGORIES = [
+    "Digital & AI",
+    "Finance",
+    "RH & Talents",
+    "Agriculture",
+    "Santé",
+    "Éducation",
+    "Commerce",
+    "Actualités"
+]
+
+DEFAULT_PAGE_SIZE = 10
+MAX_PAGE_SIZE = 50
 
 class InsightCreate(BaseModel):
     study_id: int
@@ -2789,3 +3069,633 @@ async def toggle_user_active(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
+    # ================================================================
+# HELPER FUNCTIONS
+# ================================================================
+
+def check_blog_permission(current_user: User):
+    """
+    Vérifier que l'utilisateur peut gérer le blog
+    Super Admin ou Admin Content uniquement
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Permission refusée")
+    
+    if current_user.admin_role not in ["super_admin", "admin_content"]:
+        raise HTTPException(
+            status_code=403, 
+            detail="Seuls les Super Admin et Admin Content peuvent gérer le blog"
+        )
+    
+    return True
+
+
+def get_paginated_results(query, page: int, per_page: int):
+    """Helper pour la pagination"""
+    total = query.count()
+    items = query.offset((page - 1) * per_page).limit(per_page).all()
+    total_pages = (total + per_page - 1) // per_page
+    
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages
+    }
+
+
+# ================================================================
+# ENDPOINTS ADMIN - GESTION DES ARTICLES
+# ================================================================
+
+@app.post("/api/blog/posts", response_model=BlogPostResponse)
+async def create_blog_post(
+    data: BlogPostCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Créer un nouvel article de blog
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    # Générer ou valider le slug
+    if not data.slug:
+        slug = generate_slug(data.title)
+    else:
+        slug = data.slug
+    
+    slug = ensure_unique_slug(db, slug)
+    
+    # Préparer les tags (convertir liste en JSON string)
+    tags_json = json.dumps(data.tags) if data.tags else None
+    
+    # Créer l'article
+    new_post = BlogPost(
+        title=data.title,
+        slug=slug,
+        excerpt=data.excerpt,
+        content=data.content,
+        featured_image=data.featured_image,
+        category=data.category,
+        tags=tags_json,
+        author_id=current_user.id,
+        status=data.status,
+        scheduled_at=data.scheduled_at,
+        meta_title=data.meta_title or data.title,
+        meta_description=data.meta_description or data.excerpt,
+        og_image=data.og_image or data.featured_image
+    )
+    
+    # Si publié, ajouter la date de publication
+    if data.status == "published":
+        new_post.published_at = datetime.utcnow()
+    
+    db.add(new_post)
+    db.commit()
+    db.refresh(new_post)
+    
+    # Ajouter le nom de l'auteur
+    response = BlogPostResponse.from_orm(new_post)
+    response.author_name = current_user.full_name
+    
+    return response
+
+
+@app.get("/api/blog/posts", response_model=BlogPostListResponse)
+async def get_all_blog_posts(
+    page: int = 1,
+    per_page: int = 10,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer tous les articles (admin)
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    # Limiter per_page
+    per_page = min(per_page, 50)
+    
+    # Query de base avec jointure pour le nom de l'auteur
+    query = db.query(BlogPost).join(User, BlogPost.author_id == User.id)
+    
+    # Filtres
+    if status:
+        query = query.filter(BlogPost.status == status)
+    
+    if category:
+        query = query.filter(BlogPost.category == category)
+    
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            or_(
+                BlogPost.title.ilike(search_term),
+                BlogPost.excerpt.ilike(search_term),
+                BlogPost.content.ilike(search_term)
+            )
+        )
+    
+    # Tri par date de création (plus récent d'abord)
+    query = query.order_by(desc(BlogPost.created_at))
+    
+    # Pagination
+    result = get_paginated_results(query, page, per_page)
+    
+    # Ajouter les noms d'auteurs
+    items_with_authors = []
+    for post in result["items"]:
+        post_dict = BlogPostResponse.from_orm(post)
+        post_dict.author_name = post.author.full_name
+        items_with_authors.append(post_dict)
+    
+    return {
+        **result,
+        "items": items_with_authors
+    }
+
+
+@app.get("/api/blog/posts/{post_id}", response_model=BlogPostResponse)
+async def get_blog_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupérer un article par son ID (admin)
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    post = db.query(BlogPost).filter(BlogPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=404, detail="Article non trouvé")
+    
+    response = BlogPostResponse.from_orm(post)
+    response.author_name = post.author.full_name
+    
+    return response
+
+
+@app.put("/api/blog/posts/{post_id}", response_model=BlogPostResponse)
+async def update_blog_post(
+    post_id: int,
+    data: BlogPostUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Modifier un article
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    post = db.query(BlogPost).filter(BlogPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=404, detail="Article non trouvé")
+    
+    # Mettre à jour les champs fournis
+    update_data = data.dict(exclude_unset=True)
+    
+    # Gérer le slug si modifié
+    if "slug" in update_data and update_data["slug"]:
+        update_data["slug"] = ensure_unique_slug(db, update_data["slug"], post_id)
+    
+    # Gérer les tags
+    if "tags" in update_data:
+        update_data["tags"] = json.dumps(update_data["tags"]) if update_data["tags"] else None
+    
+    # Si on passe en published, ajouter published_at
+    if "status" in update_data and update_data["status"] == "published" and not post.published_at:
+        update_data["published_at"] = datetime.utcnow()
+    
+    # Mettre à jour
+    for key, value in update_data.items():
+        setattr(post, key, value)
+    
+    db.commit()
+    db.refresh(post)
+    
+    response = BlogPostResponse.from_orm(post)
+    response.author_name = post.author.full_name
+    
+    return response
+
+
+@app.delete("/api/blog/posts/{post_id}")
+async def delete_blog_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Supprimer un article
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    post = db.query(BlogPost).filter(BlogPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=404, detail="Article non trouvé")
+    
+    db.delete(post)
+    db.commit()
+    
+    return {"message": "Article supprimé avec succès"}
+
+
+@app.post("/api/blog/posts/{post_id}/publish", response_model=BlogPostResponse)
+async def publish_blog_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Publier un article (passer de draft à published)
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    post = db.query(BlogPost).filter(BlogPost.id == post_id).first()
+    
+    if not post:
+        raise HTTPException(status_code=404, detail="Article non trouvé")
+    
+    post.status = "published"
+    post.published_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(post)
+    
+    response = BlogPostResponse.from_orm(post)
+    response.author_name = post.author.full_name
+    
+    return response
+
+
+# ================================================================
+# ENDPOINTS PUBLICS - LECTURE DES ARTICLES
+# ================================================================
+
+@app.get("/api/blog/public/posts", response_model=BlogPostPublicListResponse)
+async def get_public_blog_posts(
+    page: int = 1,
+    per_page: int = 10,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Récupérer les articles publiés (public, pas d'auth)
+    """
+    per_page = min(per_page, 50)
+    
+    # Query de base : uniquement les articles publiés
+    query = db.query(BlogPost).join(User, BlogPost.author_id == User.id).filter(
+        BlogPost.status == "published",
+        BlogPost.published_at.isnot(None)
+    )
+    
+    # Filtre par catégorie
+    if category:
+        query = query.filter(BlogPost.category == category)
+    
+    # Tri par date de publication (plus récent d'abord)
+    query = query.order_by(desc(BlogPost.published_at))
+    
+    # Pagination
+    result = get_paginated_results(query, page, per_page)
+    
+    # Préparer la réponse
+    items_public = []
+    for post in result["items"]:
+        post_dict = BlogPostPublic.from_orm(post)
+        post_dict.author_name = post.author.full_name
+        items_public.append(post_dict)
+    
+    return {
+        **result,
+        "items": items_public
+    }
+
+
+@app.get("/api/blog/public/posts/{slug}", response_model=BlogPostPublic)
+async def get_public_blog_post_by_slug(
+    slug: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Récupérer un article par son slug (public)
+    + Incrémenter le compteur de vues
+    """
+    post = db.query(BlogPost).join(User, BlogPost.author_id == User.id).filter(
+        BlogPost.slug == slug,
+        BlogPost.status == "published"
+    ).first()
+    
+    if not post:
+        raise HTTPException(status_code=404, detail="Article non trouvé")
+    
+    # Incrémenter les vues
+    post.increment_views(db)
+    
+    response = BlogPostPublic.from_orm(post)
+    response.author_name = post.author.full_name
+    
+    return response
+
+
+@app.get("/api/blog/public/categories", response_model=List[CategoryResponse])
+async def get_blog_categories(db: Session = Depends(get_db)):
+    """
+    Récupérer la liste des catégories avec le nombre d'articles
+    """
+    # Compter les articles par catégorie
+    categories = db.query(
+        BlogPost.category,
+        func.count(BlogPost.id).label('count')
+    ).filter(
+        BlogPost.status == "published",
+        BlogPost.category.isnot(None)
+    ).group_by(BlogPost.category).all()
+    
+    return [
+        {"name": cat.category, "count": cat.count}
+        for cat in categories
+    ]
+
+
+@app.get("/api/blog/public/search", response_model=SearchResponse)
+async def search_blog_posts(
+    q: str,
+    page: int = 1,
+    per_page: int = 10,
+    db: Session = Depends(get_db)
+):
+    """
+    Rechercher dans les articles publiés
+    """
+    per_page = min(per_page, 50)
+    
+    search_term = f"%{q}%"
+    
+    query = db.query(BlogPost).join(User, BlogPost.author_id == User.id).filter(
+        BlogPost.status == "published",
+        or_(
+            BlogPost.title.ilike(search_term),
+            BlogPost.excerpt.ilike(search_term),
+            BlogPost.content.ilike(search_term)
+        )
+    ).order_by(desc(BlogPost.published_at))
+    
+    result = get_paginated_results(query, page, per_page)
+    
+    items_public = []
+    for post in result["items"]:
+        post_dict = BlogPostPublic.from_orm(post)
+        post_dict.author_name = post.author.full_name
+        items_public.append(post_dict)
+    
+    return {
+        "items": items_public,
+        "total": result["total"],
+        "query": q
+    }
+
+
+@app.get("/api/blog/public/popular", response_model=List[PopularPostResponse])
+async def get_popular_posts(
+    limit: int = 5,
+    db: Session = Depends(get_db)
+):
+    """
+    Récupérer les articles les plus vus
+    """
+    posts = db.query(BlogPost).filter(
+        BlogPost.status == "published"
+    ).order_by(desc(BlogPost.views)).limit(limit).all()
+    
+    return posts
+
+
+@app.get("/api/blog/public/related/{post_id}", response_model=List[BlogPostPublic])
+async def get_related_posts(
+    post_id: int,
+    limit: int = 3,
+    db: Session = Depends(get_db)
+):
+    """
+    Récupérer des articles similaires (même catégorie)
+    """
+    # Trouver l'article actuel
+    current_post = db.query(BlogPost).filter(BlogPost.id == post_id).first()
+    
+    if not current_post:
+        return []
+    
+    # Articles de la même catégorie (sauf l'article actuel)
+    related = db.query(BlogPost).join(User, BlogPost.author_id == User.id).filter(
+        BlogPost.status == "published",
+        BlogPost.category == current_post.category,
+        BlogPost.id != post_id
+    ).order_by(desc(BlogPost.published_at)).limit(limit).all()
+    
+    items_public = []
+    for post in related:
+        post_dict = BlogPostPublic.from_orm(post)
+        post_dict.author_name = post.author.full_name
+        items_public.append(post_dict)
+    
+    return items_public
+
+
+# ================================================================
+# ENDPOINTS NEWSLETTER
+# ================================================================
+
+@app.post("/api/newsletter/subscribe")
+async def newsletter_subscribe(
+    data: NewsletterSubscribe,
+    db: Session = Depends(get_db)
+):
+    """
+    S'abonner à la newsletter
+    """
+    # Vérifier si déjà abonné
+    existing = db.query(NewsletterSubscriber).filter(
+        NewsletterSubscriber.email == data.email
+    ).first()
+    
+    if existing:
+        if existing.status == "active":
+            return {"message": "Vous êtes déjà abonné à notre newsletter"}
+        else:
+            # Réactiver l'abonnement
+            existing.status = "active"
+            existing.is_confirmed = False
+            existing.confirmation_token = secrets.token_urlsafe(32)
+            db.commit()
+            
+            # TODO: Envoyer email de confirmation
+            
+            return {
+                "message": "Abonnement réactivé. Vérifiez votre email pour confirmer.",
+                "confirmation_required": True
+            }
+    
+    # Créer nouvel abonné
+    import secrets
+    
+    new_subscriber = NewsletterSubscriber(
+        email=data.email,
+        source=data.source,
+        status="active",
+        is_confirmed=False,
+        confirmation_token=secrets.token_urlsafe(32),
+        unsubscribe_token=secrets.token_urlsafe(32)
+    )
+    
+    db.add(new_subscriber)
+    db.commit()
+    
+    # TODO: Envoyer email de confirmation avec le lien
+    # confirmation_url = f"https://afrikalytics.com/api/newsletter/confirm/{new_subscriber.confirmation_token}"
+    
+    return {
+        "message": "Merci ! Vérifiez votre email pour confirmer votre abonnement.",
+        "confirmation_required": True
+    }
+
+
+@app.get("/api/newsletter/confirm/{token}")
+async def newsletter_confirm(
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Confirmer l'abonnement newsletter
+    """
+    subscriber = db.query(NewsletterSubscriber).filter(
+        NewsletterSubscriber.confirmation_token == token
+    ).first()
+    
+    if not subscriber:
+        raise HTTPException(status_code=404, detail="Token invalide")
+    
+    if subscriber.is_confirmed:
+        return {"message": "Votre email est déjà confirmé"}
+    
+    subscriber.is_confirmed = True
+    subscriber.confirmed_at = datetime.utcnow()
+    db.commit()
+    
+    return {
+        "message": "Email confirmé avec succès ! Merci de votre abonnement.",
+        "redirect_url": "https://afrikalytics.com/blog"
+    }
+
+
+@app.get("/api/newsletter/unsubscribe/{token}")
+async def newsletter_unsubscribe(
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Se désabonner de la newsletter
+    """
+    subscriber = db.query(NewsletterSubscriber).filter(
+        NewsletterSubscriber.unsubscribe_token == token
+    ).first()
+    
+    if not subscriber:
+        raise HTTPException(status_code=404, detail="Token invalide")
+    
+    if subscriber.status == "unsubscribed":
+        return {"message": "Vous êtes déjà désabonné"}
+    
+    subscriber.status = "unsubscribed"
+    subscriber.unsubscribed_at = datetime.utcnow()
+    db.commit()
+    
+    return {
+        "message": "Vous avez été désabonné avec succès. Nous sommes tristes de vous voir partir.",
+        "redirect_url": "https://afrikalytics.com"
+    }
+
+
+@app.get("/api/newsletter/subscribers", response_model=List[NewsletterSubscriberResponse])
+async def get_newsletter_subscribers(
+    status: Optional[str] = "active",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Liste des abonnés newsletter (admin)
+    Permissions: Super Admin, Admin Content
+    """
+    check_blog_permission(current_user)
+    
+    query = db.query(NewsletterSubscriber)
+    
+    if status:
+        query = query.filter(NewsletterSubscriber.status == status)
+    
+    subscribers = query.order_by(desc(NewsletterSubscriber.subscribed_at)).all()
+    
+    return subscribers
+
+
+# ================================================================
+# FIN DES ENDPOINTS BLOG
+# ================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
