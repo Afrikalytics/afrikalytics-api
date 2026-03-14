@@ -4,7 +4,7 @@ Router pour les études de marché (CRUD).
 """
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -12,6 +12,7 @@ from models import User, Study
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission
 from app.schemas.studies import StudyCreate, StudyResponse
+from app.services.audit import log_action
 
 router = APIRouter()
 
@@ -59,6 +60,7 @@ async def get_study(study_id: int, db: Session = Depends(get_db), current_user: 
 @router.post("/api/studies", response_model=StudyResponse, status_code=201)
 async def create_study(
     data: StudyCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -91,6 +93,16 @@ async def create_study(
     db.commit()
     db.refresh(new_study)
 
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="create", resource_type="study",
+            resource_id=new_study.id, details={"title": new_study.title},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return new_study
 
 
@@ -98,6 +110,7 @@ async def create_study(
 async def update_study(
     study_id: int,
     data: StudyCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -131,12 +144,23 @@ async def update_study(
     db.commit()
     db.refresh(study)
 
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="update", resource_type="study",
+            resource_id=study_id, details={"title": study.title},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return study
 
 
 @router.delete("/api/studies/{study_id}")
 async def delete_study(
     study_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -152,6 +176,18 @@ async def delete_study(
     study = db.query(Study).filter(Study.id == study_id).first()
     if not study:
         raise HTTPException(status_code=404, detail="Étude non trouvée")
+
+    deleted_title = study.title
+
+    # Audit log BEFORE deletion
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="delete", resource_type="study",
+            resource_id=study_id, details={"deleted_title": deleted_title},
+            request=request,
+        )
+    except Exception:
+        pass
 
     db.delete(study)
     db.commit()

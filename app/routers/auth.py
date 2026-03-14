@@ -9,16 +9,18 @@ Endpoints:
     POST /api/auth/resend-code    — Renvoyer le code 2FA
     POST /api/auth/forgot-password — Demande de reset password
     POST /api/auth/reset-password  — Reset password avec token
+    POST /api/auth/logout         — Deconnexion (blacklist le token)
 """
 import html
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User, Subscription, VerificationCode
+from models import User, Subscription, VerificationCode, TokenBlacklist
+from app.dependencies import get_current_user
 from auth import (
     hash_password,
     verify_password,
@@ -39,6 +41,7 @@ from app.schemas.auth import (
 )
 from app.services.email import send_email
 from app.rate_limit import limiter
+from app.utils import validate_password
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -58,11 +61,9 @@ async def register(request: Request, data: UserRegister, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
 
     # Valider le mot de passe
-    if len(data.password) < 8:
-        raise HTTPException(
-            status_code=400,
-            detail="Le mot de passe doit contenir au moins 8 caractères"
-        )
+    is_valid, error_message = validate_password(data.password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_message)
 
     # Creer l'utilisateur
     hashed_password = hash_password(data.password)
@@ -376,11 +377,9 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
         raise HTTPException(status_code=400, detail="Utilisateur non trouvé")
 
     # Valider le nouveau mot de passe
-    if len(data.new_password) < 8:
-        raise HTTPException(
-            status_code=400,
-            detail="Le mot de passe doit contenir au moins 8 caractères"
-        )
+    is_valid, error_message = validate_password(data.new_password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_message)
 
     # Mettre a jour le mot de passe
     user.hashed_password = hash_password(data.new_password)
@@ -457,3 +456,40 @@ async def refresh_access_token(
         "token_type": "bearer",
         "expires_at": expires_at,
     }
+
+
+# ==================== LOGOUT ====================
+
+@router.post("/logout")
+async def logout(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    """
+    Deconnecter l'utilisateur en blacklistant son token JWT.
+    Les anciens tokens sans jti restent compatibles (rien a blacklister).
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token manquant")
+
+    token = authorization.replace("Bearer ", "")
+    payload = decode_access_token(token)
+
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token invalide")
+
+    jti = payload.get("jti")
+    if jti:
+        # Verify token is not already blacklisted
+        existing = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+        if not existing:
+            blacklisted = TokenBlacklist(
+                jti=jti,
+                user_id=current_user.id,
+                expires_at=datetime.fromtimestamp(payload.get("exp")),
+            )
+            db.add(blacklisted)
+            db.commit()
+
+    return {"message": "Déconnexion réussie"}

@@ -8,6 +8,7 @@ from models import Insight, User
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission
 from app.schemas.insights import InsightCreate, InsightResponse
+from app.services.audit import log_action
 
 router = APIRouter()
 
@@ -67,6 +68,7 @@ def get_insight(insight_id: int, db: Session = Depends(get_db), current_user: Us
 @router.post("/api/insights", status_code=201)
 def create_insight(
     data: InsightCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -86,6 +88,17 @@ def create_insight(
     db.add(insight)
     db.commit()
     db.refresh(insight)
+
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="create", resource_type="insight",
+            resource_id=insight.id, details={"title": insight.title},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return convert_insight_images(insight)
 
 
@@ -93,6 +106,7 @@ def create_insight(
 def update_insight(
     insight_id: int,
     data: InsightCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -114,12 +128,24 @@ def update_insight(
 
     db.commit()
     db.refresh(insight)
+
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="update", resource_type="insight",
+            resource_id=insight_id, details={"title": insight.title},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return convert_insight_images(insight)
 
 
 @router.delete("/api/insights/{insight_id}")
 def delete_insight(
     insight_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -129,6 +155,18 @@ def delete_insight(
     insight = db.query(Insight).filter(Insight.id == insight_id).first()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight non trouvé")
+
+    deleted_title = insight.title
+
+    # Audit log BEFORE deletion
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="delete", resource_type="insight",
+            resource_id=insight_id, details={"deleted_title": deleted_title},
+            request=request,
+        )
+    except Exception:
+        pass
 
     db.delete(insight)
     db.commit()

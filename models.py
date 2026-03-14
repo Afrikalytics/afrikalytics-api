@@ -382,3 +382,39 @@ class Contact(Base):
 
     def __repr__(self):
         return f"<Contact {self.name}>"
+
+
+# ================================================================
+# MODEL: AuditLog
+# ================================================================
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String(50), nullable=False)  # create, update, delete, login, logout, toggle_active, publish
+    resource_type = Column(String(50), nullable=False)  # user, study, insight, report, blog_post
+    resource_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)  # JSON string with extra details
+    ip_address = Column(String(45), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", backref="audit_logs")
+
+    def __repr__(self):
+        return f"<AuditLog {self.action} {self.resource_type} by user_id={self.user_id}>"
+
+
+# ================================================================
+# MODEL: TokenBlacklist (revoked JWT tokens)
+# ================================================================
+
+class TokenBlacklist(Base):
+    __tablename__ = "token_blacklist"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String(36), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=func.now())

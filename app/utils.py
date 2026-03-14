@@ -9,6 +9,29 @@ import secrets
 import unicodedata
 
 
+def validate_password(password: str) -> tuple[bool, str]:
+    """
+    Valider la complexite d'un mot de passe.
+    Retourne (True, "") si valide, (False, "message en francais") sinon.
+    """
+    if len(password) < 8:
+        return False, "Le mot de passe doit contenir au moins 8 caractères"
+
+    if not re.search(r'[A-Z]', password):
+        return False, "Le mot de passe doit contenir au moins une lettre majuscule"
+
+    if not re.search(r'[a-z]', password):
+        return False, "Le mot de passe doit contenir au moins une lettre minuscule"
+
+    if not re.search(r'[0-9]', password):
+        return False, "Le mot de passe doit contenir au moins un chiffre"
+
+    if not re.search(r'[!@#$%^&*()\-_+=\[\]{}|;:,.<>?]', password):
+        return False, "Le mot de passe doit contenir au moins un caractère spécial (!@#$%^&*()_+-=[]{}|;:,.<>?)"
+
+    return True, ""
+
+
 def generate_slug(title: str) -> str:
     """
     Generate a slug from a title.

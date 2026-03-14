@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 from typing import List
@@ -8,6 +8,7 @@ from models import Report, Study, User
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission, check_content_access
 from app.schemas.reports import ReportCreate, ReportResponse
+from app.services.audit import log_action
 
 router = APIRouter()
 
@@ -69,6 +70,7 @@ async def get_report(report_id: int, db: Session = Depends(get_db), current_user
 @router.post("/api/reports", response_model=ReportResponse, status_code=201)
 async def create_report(
     data: ReportCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -88,6 +90,17 @@ async def create_report(
     db.add(new_report)
     db.commit()
     db.refresh(new_report)
+
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="create", resource_type="report",
+            resource_id=new_report.id, details={"title": new_report.title, "report_type": new_report.report_type},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return new_report
 
 
@@ -95,6 +108,7 @@ async def create_report(
 async def update_report(
     report_id: int,
     data: ReportCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -116,12 +130,24 @@ async def update_report(
 
     db.commit()
     db.refresh(report)
+
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="update", resource_type="report",
+            resource_id=report_id, details={"title": report.title},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return report
 
 
 @router.delete("/api/reports/{report_id}")
 async def delete_report(
     report_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -131,6 +157,16 @@ async def delete_report(
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
+
+    # Audit log BEFORE deletion
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="delete", resource_type="report",
+            resource_id=report_id, details={"deleted_title": report.title},
+            request=request,
+        )
+    except Exception:
+        pass
 
     if report.study_id:
         study = db.query(Study).filter(Study.id == report.study_id).first()

@@ -30,7 +30,7 @@ from app.dependencies import get_current_user
 from app.schemas.auth import UserResponse
 from app.schemas.users import UserCreate, PasswordChange, EnterpriseUserAdd
 from app.services.email import send_email
-from app.utils import calculate_days_remaining
+from app.utils import calculate_days_remaining, validate_password
 
 logger = logging.getLogger(__name__)
 
@@ -240,11 +240,9 @@ async def change_password(
         raise HTTPException(status_code=400, detail="Mot de passe actuel incorrect")
 
     # Valider le nouveau mot de passe
-    if len(data.new_password) < 8:
-        raise HTTPException(
-            status_code=400,
-            detail="Le nouveau mot de passe doit contenir au moins 8 caractères"
-        )
+    is_valid, error_message = validate_password(data.new_password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_message)
 
     # Mettre a jour le mot de passe
     current_user.hashed_password = hash_password(data.new_password)

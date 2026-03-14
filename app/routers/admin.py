@@ -6,16 +6,18 @@ import html
 import secrets
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User, Subscription
+from models import User, Subscription, AuditLog
 from auth import hash_password
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission, ADMIN_ROLES
 from app.services.email import send_email
+from app.services.audit import log_action
 from app.schemas.admin import AdminUserCreate, AdminUserUpdate, AdminUserResponse
+from app.schemas.audit import AuditLogResponse, AuditLogListResponse
 
 router = APIRouter()
 
@@ -89,6 +91,7 @@ async def get_user_by_id(
 @router.post("/api/admin/users", response_model=AdminUserResponse, status_code=201)
 async def create_user_admin(
     data: AdminUserCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -155,6 +158,16 @@ async def create_user_admin(
         """,
     )
 
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="create", resource_type="user",
+            resource_id=new_user.id, details={"email": new_user.email, "plan": new_user.plan},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return new_user
 
 
@@ -162,6 +175,7 @@ async def create_user_admin(
 async def update_user_admin(
     user_id: int,
     data: AdminUserUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -217,12 +231,23 @@ async def update_user_admin(
     db.commit()
     db.refresh(user)
 
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="update", resource_type="user",
+            resource_id=user_id, details={"updated_fields": list(data.dict(exclude_unset=True).keys())},
+            request=request,
+        )
+    except Exception:
+        pass
+
     return user
 
 
 @router.delete("/api/admin/users/{user_id}")
 async def delete_user_admin(
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -246,6 +271,17 @@ async def delete_user_admin(
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
+    # Audit log BEFORE deletion (user still exists)
+    deleted_email = user.email
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="delete", resource_type="user",
+            resource_id=user_id, details={"deleted_email": deleted_email},
+            request=request,
+        )
+    except Exception:
+        pass
+
     # Supprimer les subscriptions associées
     db.query(Subscription).filter(Subscription.user_id == user_id).delete()
 
@@ -259,6 +295,7 @@ async def delete_user_admin(
 @router.put("/api/admin/users/{user_id}/toggle-active")
 async def toggle_user_active(
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -275,5 +312,68 @@ async def toggle_user_active(
     user.is_active = not user.is_active
     db.commit()
 
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="toggle_active", resource_type="user",
+            resource_id=user_id, details={"new_is_active": user.is_active},
+            request=request,
+        )
+    except Exception:
+        pass
+
     status = "activé" if user.is_active else "désactivé"
     return {"message": f"Utilisateur {status}", "is_active": user.is_active}
+
+
+@router.get("/api/admin/audit-log", response_model=AuditLogListResponse)
+async def get_audit_logs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Recuperer les logs d'audit (Super Admin ou Admin avec permission users).
+    Supporte la pagination via skip/limit et le filtrage par action/resource_type.
+    """
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(
+            status_code=403,
+            detail="Seuls les super admins et admins utilisateurs peuvent consulter les logs d'audit",
+        )
+
+    query = db.query(AuditLog).join(User, AuditLog.user_id == User.id)
+
+    if action:
+        query = query.filter(AuditLog.action == action)
+    if resource_type:
+        query = query.filter(AuditLog.resource_type == resource_type)
+
+    total = query.count()
+
+    logs = (
+        query
+        .order_by(AuditLog.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    items = []
+    for log in logs:
+        items.append(AuditLogResponse(
+            id=log.id,
+            user_id=log.user_id,
+            user_email=log.user.email if log.user else None,
+            action=log.action,
+            resource_type=log.resource_type,
+            resource_id=log.resource_id,
+            details=log.details,
+            ip_address=log.ip_address,
+            created_at=log.created_at,
+        ))
+
+    return AuditLogListResponse(items=items, total=total)

@@ -1,24 +1,24 @@
 """
 Schemas Pydantic pour les etudes de marche.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
 
 class StudyCreate(BaseModel):
-    title: str
-    description: str
-    category: str
-    duration: Optional[str] = "15-20 min"
-    deadline: Optional[str] = None
-    status: Optional[str] = "Ouvert"
-    icon: Optional[str] = "users"
-    embed_url_particulier: Optional[str] = None
-    embed_url_entreprise: Optional[str] = None
-    embed_url_results: Optional[str] = None
-    report_url_basic: Optional[str] = None
-    report_url_premium: Optional[str] = None
+    title: str = Field(..., max_length=200)
+    description: str = Field(..., max_length=5000)
+    category: str = Field(..., max_length=100)
+    duration: Optional[str] = Field("15-20 min", max_length=50)
+    deadline: Optional[str] = Field(None, max_length=50)
+    status: Optional[str] = Field("Ouvert", max_length=50)
+    icon: Optional[str] = Field("users", max_length=50)
+    embed_url_particulier: Optional[str] = Field(None, max_length=2000)
+    embed_url_entreprise: Optional[str] = Field(None, max_length=2000)
+    embed_url_results: Optional[str] = Field(None, max_length=2000)
+    report_url_basic: Optional[str] = Field(None, max_length=2000)
+    report_url_premium: Optional[str] = Field(None, max_length=2000)
     is_active: Optional[bool] = True
 
 

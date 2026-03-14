@@ -7,8 +7,8 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 class NewsletterSubscribe(BaseModel):
-    email: EmailStr
-    source: Optional[str] = "blog_footer"
+    email: EmailStr = Field(..., max_length=254)
+    source: Optional[str] = Field("blog_footer", max_length=100)
 
 
 class NewsletterSubscriberResponse(BaseModel):
@@ -27,8 +27,8 @@ class NewsletterSubscriberResponse(BaseModel):
 class NewsletterCampaignCreate(BaseModel):
     blog_post_id: Optional[int] = None
     subject: str = Field(..., min_length=1, max_length=255)
-    preview_text: Optional[str] = None
-    status: Optional[str] = "draft"
+    preview_text: Optional[str] = Field(None, max_length=500)
+    status: Optional[str] = Field("draft", max_length=20)
     scheduled_at: Optional[datetime] = None
 
 

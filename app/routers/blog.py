@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from models import BlogPost, User
 from app.utils import generate_slug, ensure_unique_slug
 from app.dependencies import get_current_user
 from app.permissions import check_blog_permission, get_paginated_results
+from app.services.audit import log_action
 from app.schemas.blog import (
     BlogPostCreate, BlogPostUpdate, BlogPostResponse, BlogPostPublic,
     BlogPostListResponse, BlogPostPublicListResponse,
@@ -25,6 +26,7 @@ router = APIRouter()
 @router.post("/api/blog/posts", response_model=BlogPostResponse, status_code=201)
 async def create_blog_post(
     data: BlogPostCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -60,6 +62,16 @@ async def create_blog_post(
     db.add(new_post)
     db.commit()
     db.refresh(new_post)
+
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="create", resource_type="blog_post",
+            resource_id=new_post.id, details={"title": new_post.title, "slug": new_post.slug},
+            request=request,
+        )
+    except Exception:
+        pass
 
     response = BlogPostResponse.from_orm(new_post)
     response.author_name = current_user.full_name
@@ -132,6 +144,7 @@ async def get_blog_post(
 async def update_blog_post(
     post_id: int,
     data: BlogPostUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -158,6 +171,16 @@ async def update_blog_post(
     db.commit()
     db.refresh(post)
 
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="update", resource_type="blog_post",
+            resource_id=post_id, details={"title": post.title, "updated_fields": list(data.dict(exclude_unset=True).keys())},
+            request=request,
+        )
+    except Exception:
+        pass
+
     response = BlogPostResponse.from_orm(post)
     response.author_name = post.author.full_name
     return response
@@ -166,6 +189,7 @@ async def update_blog_post(
 @router.delete("/api/blog/posts/{post_id}")
 async def delete_blog_post(
     post_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -175,6 +199,18 @@ async def delete_blog_post(
     if not post:
         raise HTTPException(status_code=404, detail="Article non trouvé")
 
+    deleted_title = post.title
+
+    # Audit log BEFORE deletion
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="delete", resource_type="blog_post",
+            resource_id=post_id, details={"deleted_title": deleted_title},
+            request=request,
+        )
+    except Exception:
+        pass
+
     db.delete(post)
     db.commit()
     return {"message": "Article supprimé avec succès"}
@@ -183,6 +219,7 @@ async def delete_blog_post(
 @router.post("/api/blog/posts/{post_id}/publish", response_model=BlogPostResponse)
 async def publish_blog_post(
     post_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -196,6 +233,16 @@ async def publish_blog_post(
     post.published_at = datetime.utcnow()
     db.commit()
     db.refresh(post)
+
+    # Audit log
+    try:
+        log_action(
+            db=db, user_id=current_user.id, action="publish", resource_type="blog_post",
+            resource_id=post_id, details={"title": post.title},
+            request=request,
+        )
+    except Exception:
+        pass
 
     response = BlogPostResponse.from_orm(post)
     response.author_name = post.author.full_name
