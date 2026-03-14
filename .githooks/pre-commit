@@ -1,0 +1,57 @@
+#!/bin/sh
+# Pre-commit hook for afrikalytics-api
+# Runs ruff lint + format check on staged Python files
+# Gracefully skips if ruff is not installed
+
+# Get staged .py files
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$')
+
+if [ -z "$STAGED_PY" ]; then
+  exit 0
+fi
+
+echo "🔍 Checking Python files..."
+
+# Check if ruff is available
+if command -v ruff >/dev/null 2>&1; then
+  echo "  Running ruff check..."
+  ruff check $STAGED_PY
+  RUFF_EXIT=$?
+
+  if [ $RUFF_EXIT -ne 0 ]; then
+    echo ""
+    echo "❌ Ruff found lint errors. Fix them before committing."
+    echo "   Run: ruff check --fix ."
+    exit 1
+  fi
+
+  echo "  Running ruff format check..."
+  ruff format --check $STAGED_PY
+  FORMAT_EXIT=$?
+
+  if [ $FORMAT_EXIT -ne 0 ]; then
+    echo ""
+    echo "❌ Ruff format check failed. Format your code before committing."
+    echo "   Run: ruff format ."
+    exit 1
+  fi
+
+  echo "✅ Ruff checks passed!"
+else
+  echo "⚠️  ruff not installed — skipping Python lint."
+  echo "   Install with: pip install ruff"
+fi
+
+# Check for hardcoded secrets in staged files
+echo "🔒 Checking for hardcoded secrets..."
+for file in $STAGED_PY; do
+  # Check for hardcoded secret keys (not env var references)
+  if git diff --cached -- "$file" | grep -E '^\+' | grep -vE '^\+\+\+' | grep -iE '(secret_key|api_key|password)\s*=\s*"[^"]{8,}"' | grep -vE '(os\.|environ|getenv)' >/dev/null 2>&1; then
+    echo ""
+    echo "❌ Possible hardcoded secret in $file"
+    echo "   Use environment variables instead (os.getenv, os.environ)"
+    exit 1
+  fi
+done
+
+echo "✅ No hardcoded secrets found."
