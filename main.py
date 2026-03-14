@@ -90,22 +90,39 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 app.add_middleware(CSRFMiddleware)
 
 # CORS — restricted to known origins only (no wildcard)
-allowed_origins = [
-    os.getenv("FRONTEND_URL", "https://afrikalytics.vercel.app"),
+# Use ALLOWED_ORIGINS env var (comma-separated) for flexibility, with sensible defaults.
+_default_origins = [
+    "https://afrikalytics-dashboard.vercel.app",
     "https://afrikalytics.com",
     "https://www.afrikalytics.com",
-    "https://afrikalytics-website.vercel.app",
     "https://dashboard.afrikalytics.com",
-    "https://afrikalytics-dashboard.vercel.app",
+    "https://afrikalytics.vercel.app",
+    "https://afrikalytics-website.vercel.app",
     "http://localhost:3000",
 ]
+
+_env_origins = os.getenv("ALLOWED_ORIGINS", "")
+if _env_origins:
+    allowed_origins = [o.strip() for o in _env_origins.split(",") if o.strip()]
+else:
+    allowed_origins = list(_default_origins)
+
+# Add FRONTEND_URL / NEXT_PUBLIC_API_URL origin if set and not already present
+for _env_key in ("FRONTEND_URL", "NEXT_PUBLIC_API_URL"):
+    _extra = os.getenv(_env_key, "")
+    if _extra and _extra not in allowed_origins:
+        allowed_origins.append(_extra)
+
+# Regex to allow all Vercel preview deployment subdomains (https://*.vercel.app)
+_origin_regex = r"https://[a-zA-Z0-9\-]+\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*", "X-Requested-With"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
 # Enregistrer les routers
