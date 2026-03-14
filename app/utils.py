@@ -1,0 +1,139 @@
+"""
+Utility functions and constants for the Afrikalytics API.
+Extracted from models.py to keep models clean.
+"""
+
+import json
+import re
+import secrets
+import unicodedata
+
+
+def generate_slug(title: str) -> str:
+    """
+    Generate a slug from a title.
+    Example: "Les 5 Tendances IA en 2025" -> "les-5-tendances-ia-en-2025"
+    """
+    # Normalize accents
+    slug = unicodedata.normalize('NFKD', title)
+    slug = slug.encode('ascii', 'ignore').decode('utf-8')
+
+    # Lowercase
+    slug = slug.lower()
+
+    # Replace spaces and special chars with dashes
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+    slug = re.sub(r'[\s]+', '-', slug)
+    slug = re.sub(r'-+', '-', slug)
+
+    # Strip leading/trailing dashes
+    slug = slug.strip('-')
+
+    # Limit to 100 chars
+    slug = slug[:100]
+
+    return slug
+
+
+def ensure_unique_slug(db, slug: str, post_id: int | None = None) -> str:
+    """
+    Ensure the slug is unique in blog_posts.
+    If it already exists, append a numeric suffix.
+    """
+    from models import BlogPost
+
+    original_slug = slug
+    counter = 1
+
+    while True:
+        query = db.query(BlogPost).filter(BlogPost.slug == slug)
+
+        # Exclude current post when editing
+        if post_id:
+            query = query.filter(BlogPost.id != post_id)
+
+        existing = query.first()
+
+        if not existing:
+            return slug
+
+        slug = f"{original_slug}-{counter}"
+        counter += 1
+
+        # Safety: max 100 attempts
+        if counter > 100:
+            slug = f"{original_slug}-{secrets.token_hex(4)}"
+            break
+
+    return slug
+
+
+def calculate_days_remaining(end_date) -> int | None:
+    """
+    Calculate the number of days remaining from today until end_date.
+    Returns None if end_date is None, 0 if already expired.
+    Handles both datetime and date objects.
+    """
+    from datetime import datetime
+
+    if end_date is None:
+        return None
+
+    if hasattr(end_date, "date"):
+        end = end_date.date()
+    else:
+        end = end_date
+
+    days = (end - datetime.utcnow().date()).days
+    return max(0, days)
+
+
+def calculate_reading_time(content: str) -> int:
+    """
+    Estimate reading time based on 200 words per minute.
+    Returns minutes (minimum 1).
+    """
+    # Strip HTML tags
+    text = re.sub(r'<[^>]+>', '', content)
+
+    # Count words
+    words = len(text.split())
+
+    # Calculate time (minimum 1 minute)
+    reading_time = max(1, round(words / 200))
+
+    return reading_time
+
+
+# ================================================================
+# CONSTANTS
+# ================================================================
+
+BLOG_CATEGORIES = [
+    "Digital & AI",
+    "Finance",
+    "RH & Talents",
+    "Agriculture",
+    "Santé",
+    "Éducation",
+    "Commerce",
+    "Actualités",
+]
+
+BLOG_STATUSES = {
+    "draft": "Brouillon",
+    "published": "Publié",
+    "scheduled": "Programmé",
+}
+
+NEWSLETTER_STATUSES = {
+    "active": "Actif",
+    "unsubscribed": "Désabonné",
+}
+
+CAMPAIGN_STATUSES = {
+    "draft": "Brouillon",
+    "scheduled": "Programmé",
+    "sent": "Envoyé",
+    "failed": "Échoué",
+}

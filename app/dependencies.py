@@ -1,0 +1,54 @@
+"""
+Dependencies FastAPI partagees entre les routers.
+Extrait de main.py pour eviter les imports circulaires.
+"""
+from fastapi import Depends, HTTPException, Header
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User
+from auth import decode_access_token
+
+
+def get_current_user(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    Dependency FastAPI pour recuperer l'utilisateur courant depuis le token JWT.
+
+    Usage:
+        @router.get("/endpoint")
+        async def endpoint(current_user: User = Depends(get_current_user)):
+            ...
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token manquant")
+
+    token = authorization.replace("Bearer ", "")
+
+    try:
+        payload = decode_access_token(token)
+    except ValueError:
+        # Token expired — clear 401 with descriptive message
+        raise HTTPException(
+            status_code=401,
+            detail="Token expir\u00e9. Veuillez vous reconnecter ou utiliser le refresh token."
+        )
+
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token invalide")
+
+    # Reject refresh tokens used as access tokens
+    if payload.get("token_type") == "refresh":
+        raise HTTPException(status_code=401, detail="Token invalide. Utilisez un access token.")
+
+    user = db.query(User).filter(User.email == payload.get("sub")).first()
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur non trouv\u00e9")
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Compte d\u00e9sactiv\u00e9")
+
+    return user
