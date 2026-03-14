@@ -1,0 +1,181 @@
+{
+  "mcpServers": {
+
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "description": "Filesystem - secure local file operations (read, write, search, move, directory tree)"
+    },
+
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${input:github_token}"
+      },
+      "description": "GitHub - repos, issues, PRs, code review, CI/CD workflow monitoring"
+    },
+
+    "github-actions": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "github-actions-mcp-server"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${input:github_token}"
+      },
+      "description": "GitHub Actions - manage workflows, runs, jobs, artifacts, secrets"
+    },
+
+    "git": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@mseep/git-mcp-server"
+      ],
+      "description": "Git - clone, commit, branch, diff, log, push, pull, merge, rebase, tags"
+    },
+
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "description": "Persistent memory - knowledge graph for cross-session context"
+    },
+
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase"
+      ],
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": ""
+      },
+      "description": "Supabase - database, auth, storage, edge functions, RLS policies"
+    },
+
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://user:password@host:5432/afrikalytics"
+      ],
+      "description": "PostgreSQL read-only - schema inspection & queries"
+    },
+
+    "postgres-pro": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@crystaldba/postgres-mcp"
+      ],
+      "env": {
+        "DATABASE_URL": "postgresql://user:password@host:5432/afrikalytics"
+      },
+      "description": "PostgreSQL Pro - performance analysis & index tuning"
+    },
+
+    "fetch": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-fetch"
+      ],
+      "description": "HTTP fetch - test REST API endpoints"
+    },
+
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp"
+      ],
+      "description": "Browser automation - E2E testing"
+    },
+
+    "sentry": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@sentry/mcp-server"
+      ],
+      "env": {
+        "SENTRY_AUTH_TOKEN": ""
+      },
+      "description": "Sentry - error tracking & debugging"
+    },
+
+    "grafana": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-grafana"
+      ],
+      "env": {
+        "GRAFANA_URL": "",
+        "GRAFANA_API_KEY": ""
+      },
+      "description": "Grafana - dashboards, metrics & alerting"
+    },
+
+    "docker": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-docker"
+      ],
+      "description": "Docker - build images, manage containers, inspect logs"
+    },
+
+    "thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-sequentialthinking-tools"
+      ],
+      "description": "Sequential Thinking - structured step-by-step reasoning for complex tasks"
+    },
+
+    "eslint": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic-ai/eslint-mcp-server"
+      ],
+      "description": "ESLint - code quality analysis & enforcement"
+    },
+
+    "railway": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@railway/mcp-server"
+      ],
+      "description": "Railway - deploy, manage services, view logs, environment variables, domains"
+    },
+
+    "vercel": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@vercel/mcp"
+      ],
+      "env": {
+        "VERCEL_API_TOKEN": "${input:vercel_token}"
+      },
+      "description": "Vercel - deployments, domains, env vars, logs, project settings"
+    }
+  }
+}
