@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: afrikalytics-db
+    environment:
+      POSTGRES_DB: afrikalytics
+      POSTGRES_USER: afrikalytics
+      POSTGRES_PASSWORD: afrikalytics-dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U afrikalytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: afrikalytics-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: afrikalytics-api
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://afrikalytics:afrikalytics-dev@postgres:5432/afrikalytics
+      SECRET_KEY: docker-dev-secret-key-change-in-prod
+      ENVIRONMENT: development
+      FRONTEND_URL: http://localhost:3000
+      RESEND_API_KEY: re_test_placeholder
+      PAYDUNYA_MASTER_KEY: test_placeholder
+      PAYDUNYA_PRIVATE_KEY: test_placeholder
+      PAYDUNYA_TOKEN: test_placeholder
+      PAYDUNYA_MODE: test
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
