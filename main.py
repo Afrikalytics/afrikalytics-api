@@ -4,13 +4,33 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime
 import os
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+# Initialize Sentry
+sentry_dsn = os.getenv("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        integrations=[
+            FastApiIntegration(),
+            SqlalchemyIntegration(),
+        ],
+        traces_sample_rate=0.1,  # 10% des transactions
+        profiles_sample_rate=0.1,
+        environment=os.getenv("ENVIRONMENT", "development"),
+        release=f"afrikalytics-api@{os.getenv('RAILWAY_GIT_COMMIT_SHA', 'local')}",
+        send_default_pii=False,  # RGPD : pas de PII par defaut
+    )
+
 # Rate limiting
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.rate_limit import limiter
 
-from database import engine
-from models import Base
+from database import engine  # noqa: F401 — kept for potential direct usage
+from models import Base  # noqa: F401 — kept so models are registered
 
 # Routers modulaires
 from app.routers.auth import router as auth_router
@@ -25,8 +45,9 @@ from app.routers.blog import router as blog_router
 from app.routers.newsletter import router as newsletter_router
 from app.routers.payments import router as payments_router
 
-# Creer les tables
-Base.metadata.create_all(bind=engine)
+# Database tables are managed by Alembic migrations
+# Run: alembic upgrade head
+# For existing databases: alembic stamp head
 
 app = FastAPI(
     title="Afrikalytics API",
