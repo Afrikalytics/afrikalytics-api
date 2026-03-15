@@ -1,28 +1,33 @@
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import desc
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import NewsletterSubscriber, User
+from app.database import get_db
+from app.models import NewsletterSubscriber, User
 from app.dependencies import get_current_user
 from app.permissions import check_blog_permission
 from app.schemas.newsletter import NewsletterSubscribe, NewsletterSubscriberResponse
+from app.rate_limit import limiter
 
 router = APIRouter()
 
 
 @router.post("/api/newsletter/subscribe", status_code=201)
+@limiter.limit("10/minute")
 async def newsletter_subscribe(
+    request: Request,
     data: NewsletterSubscribe,
     db: Session = Depends(get_db),
 ):
-    existing = db.query(NewsletterSubscriber).filter(
-        NewsletterSubscriber.email == data.email
-    ).first()
+    existing = db.execute(
+        select(NewsletterSubscriber).where(
+            NewsletterSubscriber.email == data.email
+        )
+    ).scalar_one_or_none()
 
     if existing:
         if existing.status == "active":
@@ -56,13 +61,17 @@ async def newsletter_subscribe(
 
 
 @router.get("/api/newsletter/confirm/{token}")
+@limiter.limit("20/minute")
 async def newsletter_confirm(
+    request: Request,
     token: str,
     db: Session = Depends(get_db),
 ):
-    subscriber = db.query(NewsletterSubscriber).filter(
-        NewsletterSubscriber.confirmation_token == token
-    ).first()
+    subscriber = db.execute(
+        select(NewsletterSubscriber).where(
+            NewsletterSubscriber.confirmation_token == token
+        )
+    ).scalar_one_or_none()
 
     if not subscriber:
         raise HTTPException(status_code=404, detail="Token invalide")
@@ -71,7 +80,7 @@ async def newsletter_confirm(
         return {"message": "Votre email est déjà confirmé"}
 
     subscriber.is_confirmed = True
-    subscriber.confirmed_at = datetime.utcnow()
+    subscriber.confirmed_at = datetime.now(timezone.utc)
     db.commit()
 
     return {
@@ -81,13 +90,17 @@ async def newsletter_confirm(
 
 
 @router.get("/api/newsletter/unsubscribe/{token}")
+@limiter.limit("20/minute")
 async def newsletter_unsubscribe(
+    request: Request,
     token: str,
     db: Session = Depends(get_db),
 ):
-    subscriber = db.query(NewsletterSubscriber).filter(
-        NewsletterSubscriber.unsubscribe_token == token
-    ).first()
+    subscriber = db.execute(
+        select(NewsletterSubscriber).where(
+            NewsletterSubscriber.unsubscribe_token == token
+        )
+    ).scalar_one_or_none()
 
     if not subscriber:
         raise HTTPException(status_code=404, detail="Token invalide")
@@ -96,7 +109,7 @@ async def newsletter_unsubscribe(
         return {"message": "Vous êtes déjà désabonné"}
 
     subscriber.status = "unsubscribed"
-    subscriber.unsubscribed_at = datetime.utcnow()
+    subscriber.unsubscribed_at = datetime.now(timezone.utc)
     db.commit()
 
     return {
@@ -106,17 +119,20 @@ async def newsletter_unsubscribe(
 
 
 @router.get("/api/newsletter/subscribers", response_model=List[NewsletterSubscriberResponse])
+@limiter.limit("20/minute")
 async def get_newsletter_subscribers(
+    request: Request,
     status: Optional[str] = "active",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     check_blog_permission(current_user)
 
-    query = db.query(NewsletterSubscriber)
+    stmt = select(NewsletterSubscriber)
 
     if status:
-        query = query.filter(NewsletterSubscriber.status == status)
+        stmt = stmt.where(NewsletterSubscriber.status == status)
 
-    subscribers = query.order_by(desc(NewsletterSubscriber.subscribed_at)).all()
+    stmt = stmt.order_by(desc(NewsletterSubscriber.subscribed_at))
+    subscribers = db.execute(stmt).scalars().all()
     return subscribers

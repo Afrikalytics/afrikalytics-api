@@ -3,10 +3,32 @@ Utility functions and constants for the Afrikalytics API.
 Extracted from models.py to keep models clean.
 """
 
-import json
 import re
 import secrets
 import unicodedata
+
+
+def validate_password(password: str) -> tuple[bool, str]:
+    """
+    Valider la complexite d'un mot de passe.
+    Retourne (True, "") si valide, (False, "message en francais") sinon.
+    """
+    if len(password) < 8:
+        return False, "Le mot de passe doit contenir au moins 8 caractères"
+
+    if not re.search(r'[A-Z]', password):
+        return False, "Le mot de passe doit contenir au moins une lettre majuscule"
+
+    if not re.search(r'[a-z]', password):
+        return False, "Le mot de passe doit contenir au moins une lettre minuscule"
+
+    if not re.search(r'[0-9]', password):
+        return False, "Le mot de passe doit contenir au moins un chiffre"
+
+    if not re.search(r'[!@#$%^&*()\-_+=\[\]{}|;:,.<>?]', password):
+        return False, "Le mot de passe doit contenir au moins un caractère spécial (!@#$%^&*()_+-=[]{}|;:,.<>?)"
+
+    return True, ""
 
 
 def generate_slug(title: str) -> str:
@@ -40,19 +62,20 @@ def ensure_unique_slug(db, slug: str, post_id: int | None = None) -> str:
     Ensure the slug is unique in blog_posts.
     If it already exists, append a numeric suffix.
     """
-    from models import BlogPost
+    from sqlalchemy import select
+    from app.models import BlogPost
 
     original_slug = slug
     counter = 1
 
     while True:
-        query = db.query(BlogPost).filter(BlogPost.slug == slug)
+        stmt = select(BlogPost).where(BlogPost.slug == slug)
 
         # Exclude current post when editing
         if post_id:
-            query = query.filter(BlogPost.id != post_id)
+            stmt = stmt.where(BlogPost.id != post_id)
 
-        existing = query.first()
+        existing = db.execute(stmt).scalar_one_or_none()
 
         if not existing:
             return slug
@@ -74,7 +97,7 @@ def calculate_days_remaining(end_date) -> int | None:
     Returns None if end_date is None, 0 if already expired.
     Handles both datetime and date objects.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     if end_date is None:
         return None
@@ -84,7 +107,7 @@ def calculate_days_remaining(end_date) -> int | None:
     else:
         end = end_date
 
-    days = (end - datetime.utcnow().date()).days
+    days = (end - datetime.now(timezone.utc).date()).days
     return max(0, days)
 
 

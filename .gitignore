@@ -73,5 +73,5 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
-# MCP config (contains credentials)
-.mcp.json
+# MCP config (credentials use ${input:...} placeholders — safe to version)
+# .mcp.json

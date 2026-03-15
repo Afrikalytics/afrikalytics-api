@@ -24,19 +24,25 @@ uvicorn main:app --reload --port 8000
 # http://localhost:8000/redoc      (ReDoc)
 ```
 
-Pas de framework de test configure. Pas de linter configure. Pas de CI/CD.
+Pas de framework de test configure. Pas de linter configure. CI/CD a configurer.
 
 ## Architecture
 
 **Stack :** FastAPI 0.104 + SQLAlchemy 2.0 + PostgreSQL 16 + Pydantic 2.5
 
-**Structure actuelle (monolithe) :**
+**Structure actuelle (refactoree) :**
 ```
 afrikalytics-api/
-├── main.py           # 127KB — TOUT le code applicatif (endpoints, schemas, logique metier)
+├── main.py           # ~160 lignes — App FastAPI, Sentry init, CSRF middleware, CORS config, router imports
 ├── models.py         # Modeles SQLAlchemy (User, Study, Subscription, BlogPost, etc.)
 ├── auth.py           # JWT : hash_password, verify_password, create/decode_access_token
 ├── database.py       # Configuration SQLAlchemy (engine, session, Base)
+├── app/
+│   ├── routers/      # 11 routers (auth, users, admin, studies, insights, reports, blog, newsletter, payments, dashboard, contacts)
+│   ├── schemas/      # 11 schemas Pydantic v2
+│   ├── services/     # Services metier (email.py)
+│   ├── permissions.py # RBAC dependencies
+│   └── rate_limit.py # SlowAPI configuration
 ├── requirements.txt  # Dependencies Python
 ├── .env.example      # Template variables d'environnement
 ├── Procfile          # Commande de lancement Railway
@@ -44,7 +50,7 @@ afrikalytics-api/
 └── README.md
 ```
 
-**Probleme majeur :** `main.py` est un fichier monolithique de 127KB contenant tous les endpoints, schemas Pydantic, et la logique metier. A refactorer en modules.
+Le monolithe de 127KB a ete refactore en modules. `main.py` contient desormais uniquement l'initialisation de l'app (Sentry, CSRF middleware, CORS restrictif, rate limiting) et l'import des 11 routers.
 
 ### Structure cible (refactoring)
 ```
@@ -188,7 +194,7 @@ Voir le code source `main.py` pour la liste complete.
 - **JWT :** HS256, expiry 7j, secret key depuis env var (fallback insecure a supprimer)
 - **Passwords :** bcrypt avec salt
 - **Rate limiting :** SlowAPI par IP
-- **CORS :** Configure pour les domaines de production et localhost
+- **CORS :** Restreint aux origines connues (Vercel, afrikalytics.com, localhost:3000) + regex pour les previews Vercel. Plus de wildcard `*`
 - **Attention :** Le fallback `SECRET_KEY = "your-super-secret-key-change-in-production"` dans `auth.py` est une faille critique a corriger
 
 ## Coding Conventions

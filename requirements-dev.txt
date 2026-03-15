@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# Testing
+pytest==7.4.4
+httpx==0.26.0
+
+# Linting & Security
+ruff>=0.1.0
+bandit>=1.7.0

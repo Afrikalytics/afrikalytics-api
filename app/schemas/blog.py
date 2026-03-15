@@ -1,7 +1,6 @@
 """
 Schemas Pydantic pour le module Blog.
 """
-import json
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field, validator
@@ -10,16 +9,16 @@ from pydantic import BaseModel, Field, validator
 class BlogPostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     slug: Optional[str] = Field(None, max_length=255)
-    excerpt: Optional[str] = None
-    content: str = Field(..., min_length=1)
-    featured_image: Optional[str] = None
-    category: Optional[str] = None
+    excerpt: Optional[str] = Field(None, max_length=2000)
+    content: str = Field(..., min_length=1, max_length=50000)
+    featured_image: Optional[str] = Field(None, max_length=2000)
+    category: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = []
-    status: Optional[str] = "draft"
+    status: Optional[str] = Field("draft", max_length=20)
     scheduled_at: Optional[datetime] = None
-    meta_title: Optional[str] = None
-    meta_description: Optional[str] = None
-    og_image: Optional[str] = None
+    meta_title: Optional[str] = Field(None, max_length=200)
+    meta_description: Optional[str] = Field(None, max_length=500)
+    og_image: Optional[str] = Field(None, max_length=2000)
 
     @validator('status')
     def validate_status(cls, v):
@@ -30,27 +29,24 @@ class BlogPostCreate(BaseModel):
 
     @validator('tags', pre=True)
     def validate_tags(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
+        if isinstance(v, list):
+            return v
         return v if v else []
 
 
 class BlogPostUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     slug: Optional[str] = Field(None, max_length=255)
-    excerpt: Optional[str] = None
-    content: Optional[str] = None
-    featured_image: Optional[str] = None
-    category: Optional[str] = None
+    excerpt: Optional[str] = Field(None, max_length=2000)
+    content: Optional[str] = Field(None, max_length=50000)
+    featured_image: Optional[str] = Field(None, max_length=2000)
+    category: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = None
-    status: Optional[str] = None
+    status: Optional[str] = Field(None, max_length=20)
     scheduled_at: Optional[datetime] = None
-    meta_title: Optional[str] = None
-    meta_description: Optional[str] = None
-    og_image: Optional[str] = None
+    meta_title: Optional[str] = Field(None, max_length=200)
+    meta_description: Optional[str] = Field(None, max_length=500)
+    og_image: Optional[str] = Field(None, max_length=2000)
 
     @validator('status')
     def validate_status(cls, v):
@@ -88,11 +84,8 @@ class BlogPostResponse(BaseModel):
 
     @validator('tags', pre=True)
     def parse_tags(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
+        if isinstance(v, list):
+            return v
         return v if v else []
 
 
@@ -119,11 +112,8 @@ class BlogPostPublic(BaseModel):
 
     @validator('tags', pre=True)
     def parse_tags(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
+        if isinstance(v, list):
+            return v
         return v if v else []
 
 

@@ -3,22 +3,22 @@ Schemas Pydantic pour l'authentification.
 Extrait de main.py — schemas: UserRegister, UserLogin, UserResponse, TokenResponse,
 ForgotPassword, ResetPassword, VerifyCodeRequest, LoginPendingResponse.
 """
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
 
 class UserRegister(BaseModel):
     """Schema pour l'inscription d'un nouvel utilisateur."""
-    email: EmailStr
-    name: str
-    password: str
+    email: EmailStr = Field(..., max_length=254)
+    name: str = Field(..., max_length=100)
+    password: str = Field(..., max_length=128)
 
 
 class UserLogin(BaseModel):
     """Schema pour la connexion."""
-    email: EmailStr
-    password: str
+    email: EmailStr = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
 
 
 class UserResponse(BaseModel):
@@ -60,19 +60,19 @@ class RefreshTokenResponse(BaseModel):
 
 class ForgotPassword(BaseModel):
     """Schema pour la demande de reset de mot de passe."""
-    email: EmailStr
+    email: EmailStr = Field(..., max_length=254)
 
 
 class ResetPassword(BaseModel):
     """Schema pour la reinitialisation du mot de passe."""
-    token: str
-    new_password: str
+    token: str = Field(..., max_length=500)
+    new_password: str = Field(..., max_length=128)
 
 
 class VerifyCodeRequest(BaseModel):
     """Schema pour la verification du code 2FA."""
-    email: EmailStr
-    code: str
+    email: EmailStr = Field(..., max_length=254)
+    code: str = Field(..., max_length=6)
 
 
 class LoginPendingResponse(BaseModel):

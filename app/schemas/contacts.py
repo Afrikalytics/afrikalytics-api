@@ -3,14 +3,14 @@ Schemas Pydantic pour les contacts.
 """
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class ContactCreate(BaseModel):
-    name: str
-    email: EmailStr
-    company: Optional[str] = None
-    message: str
+    name: str = Field(..., max_length=100)
+    email: EmailStr = Field(..., max_length=254)
+    company: Optional[str] = Field(None, max_length=200)
+    message: str = Field(..., max_length=5000)
 
 
 class ContactResponse(BaseModel):
