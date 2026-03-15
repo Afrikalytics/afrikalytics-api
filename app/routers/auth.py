@@ -16,8 +16,11 @@ Endpoints:
     GET  /api/auth/sso/microsoft/callback — Callback Microsoft OAuth2
     POST /api/auth/sso/exchange   — Echange code SSO contre JWT (SEC-01 fix)
 """
+import hashlib
+import hmac
 import logging
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -71,6 +74,57 @@ from app.utils import validate_password
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+
+# ==================== SSO STATE HELPERS ====================
+
+def generate_sso_state(secret_key: str) -> str:
+    """
+    Generate a signed, time-stamped SSO state token (stateless CSRF protection).
+
+    Format: "{timestamp}.{nonce}.{hmac_sha256_signature}"
+    The signature covers the payload so the state cannot be forged or replayed
+    without knowledge of SECRET_KEY.
+    """
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(16)
+    payload = f"{timestamp}.{nonce}"
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        payload.encode('utf-8'),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def verify_sso_state(state: str, secret_key: str, max_age: int = 600) -> bool:
+    """
+    Verify a signed SSO state token.
+
+    Returns True only when:
+    - The token has exactly the expected structure.
+    - The HMAC signature is valid (constant-time comparison).
+    - The timestamp is within max_age seconds (default: 10 minutes).
+    Returns False for any invalid or expired token — never raises.
+    """
+    try:
+        parts = state.rsplit(".", 1)
+        if len(parts) != 2:
+            return False
+        payload, signature = parts
+        expected = hmac.new(
+            secret_key.encode('utf-8'),
+            payload.encode('utf-8'),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        timestamp = int(payload.split(".")[0])
+        if time.time() - timestamp > max_age:
+            return False
+        return True
+    except (ValueError, IndexError):
+        return False
 
 
 # ==================== REGISTER ====================
@@ -541,13 +595,16 @@ async def sso_google_login(request: Request):
     """
     Retourne l'URL d'autorisation Google OAuth2.
     Le frontend redirige l'utilisateur vers cette URL.
+    The state parameter is HMAC-signed to prevent CSRF on the OAuth callback.
     """
     settings = get_settings()
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(status_code=501, detail="L'authentification Google n'est pas configurée")
 
     redirect_uri = f"{settings.api_url}/api/auth/sso/google/callback"
-    state = secrets.token_urlsafe(32)
+    # CSRF protection: use a signed, time-stamped state token instead of a
+    # random opaque value that would require server-side session storage.
+    state = generate_sso_state(settings.secret_key)
 
     auth_url = await get_google_auth_url(
         client_id=settings.google_client_id,
@@ -571,6 +628,12 @@ async def sso_google_callback(
     """
     settings = get_settings()
     redirect_uri = f"{settings.api_url}/api/auth/sso/google/callback"
+
+    # Verify the HMAC-signed state token before touching the OAuth code.
+    # A missing or invalid state is a CSRF attack — reject immediately with 400.
+    if not state or not verify_sso_state(state, settings.secret_key):
+        logger.warning("Google SSO callback: invalid or missing state parameter — possible CSRF attempt")
+        raise HTTPException(status_code=400, detail="Paramètre state invalide ou expiré. Veuillez recommencer la connexion.")
 
     try:
         # 1. Exchange code for tokens
@@ -667,13 +730,16 @@ async def sso_microsoft_login(request: Request):
     """
     Retourne l'URL d'autorisation Microsoft OAuth2.
     Le frontend redirige l'utilisateur vers cette URL.
+    The state parameter is HMAC-signed to prevent CSRF on the OAuth callback.
     """
     settings = get_settings()
     if not settings.microsoft_client_id or not settings.microsoft_client_secret:
         raise HTTPException(status_code=501, detail="L'authentification Microsoft n'est pas configurée")
 
     redirect_uri = f"{settings.api_url}/api/auth/sso/microsoft/callback"
-    state = secrets.token_urlsafe(32)
+    # CSRF protection: use a signed, time-stamped state token instead of a
+    # random opaque value that would require server-side session storage.
+    state = generate_sso_state(settings.secret_key)
 
     auth_url = await get_microsoft_auth_url(
         client_id=settings.microsoft_client_id,
@@ -698,6 +764,12 @@ async def sso_microsoft_callback(
     """
     settings = get_settings()
     redirect_uri = f"{settings.api_url}/api/auth/sso/microsoft/callback"
+
+    # Verify the HMAC-signed state token before touching the OAuth code.
+    # A missing or invalid state is a CSRF attack — reject immediately with 400.
+    if not state or not verify_sso_state(state, settings.secret_key):
+        logger.warning("Microsoft SSO callback: invalid or missing state parameter — possible CSRF attempt")
+        raise HTTPException(status_code=400, detail="Paramètre state invalide ou expiré. Veuillez recommencer la connexion.")
 
     try:
         # 1. Exchange code for tokens
