@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from app.database import get_db
+from app.middleware.tenant import get_tenant_db
 from app.models import Insight, User
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission
 from app.schemas.insights import InsightCreate, InsightUpdate
 from app.services.audit import log_action
+from app.rate_limit import limiter
 
 router = APIRouter()
 
@@ -33,10 +35,12 @@ def convert_insight_images(insight):
 
 
 @router.get("/api/insights")
+@limiter.limit("30/minute")
 def get_all_insights(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     insights = db.execute(
@@ -49,7 +53,8 @@ def get_all_insights(
 
 
 @router.get("/api/insights/study/{study_id}")
-def get_insight_by_study(study_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@limiter.limit("30/minute")
+def get_insight_by_study(request: Request, study_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     insight = db.execute(
         select(Insight)
         .where(Insight.study_id == study_id, Insight.is_published.is_(True))
@@ -60,7 +65,8 @@ def get_insight_by_study(study_id: int, db: Session = Depends(get_db), current_u
 
 
 @router.get("/api/insights/{insight_id}")
-def get_insight(insight_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@limiter.limit("30/minute")
+def get_insight(request: Request, insight_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     insight = db.execute(
         select(Insight).where(Insight.id == insight_id)
     ).scalar_one_or_none()
@@ -72,10 +78,11 @@ def get_insight(insight_id: int, db: Session = Depends(get_db), current_user: Us
 
 
 @router.post("/api/insights", status_code=201)
+@limiter.limit("10/minute")
 def create_insight(
     data: InsightCreate,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if not check_admin_permission(current_user, "insights"):
@@ -109,11 +116,12 @@ def create_insight(
 
 
 @router.put("/api/insights/{insight_id}")
+@limiter.limit("10/minute")
 def update_insight(
     insight_id: int,
     data: InsightUpdate,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if not check_admin_permission(current_user, "insights"):
@@ -148,10 +156,11 @@ def update_insight(
 
 
 @router.delete("/api/insights/{insight_id}")
+@limiter.limit("5/minute")
 def delete_insight(
     insight_id: int,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if not check_admin_permission(current_user, "insights"):

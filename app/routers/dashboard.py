@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session, joinedload
 
@@ -24,6 +24,7 @@ from app.services.email_templates import (
 )
 from app.utils import calculate_days_remaining
 from app.services.cache import cache_get, cache_set
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,9 @@ if not CRON_SECRET:
 
 
 @router.get("/api/dashboard/stats")
+@limiter.limit("30/minute")
 async def get_dashboard_stats(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -127,7 +130,9 @@ async def get_dashboard_stats(
 
 
 @router.post("/api/subscriptions/check-expiry")
+@limiter.limit("10/minute")
 async def check_subscription_expiry(
+    request: Request,
     db: Session = Depends(get_db),
     x_cron_secret: Optional[str] = Header(None),
 ):
@@ -243,7 +248,9 @@ async def check_subscription_expiry(
 
 
 @router.get("/api/subscriptions/my-subscription")
+@limiter.limit("30/minute")
 async def get_my_subscription(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):

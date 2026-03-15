@@ -170,8 +170,8 @@ for _extra in (settings.frontend_url, settings.next_public_api_url):
     if _extra and _extra not in allowed_origins:
         allowed_origins.append(_extra)
 
-# Regex to allow all Vercel preview deployment subdomains (https://*.vercel.app)
-_origin_regex = r"https://[a-zA-Z0-9\-]+\.vercel\.app"
+# Regex to allow only Afrikalytics Vercel preview deployments (https://afrikalytics*.vercel.app)
+_origin_regex = r"https://afrikalytics[a-zA-Z0-9\-]*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,

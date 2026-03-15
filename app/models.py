@@ -11,7 +11,7 @@ from sqlalchemy import (
     Text,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSON, JSONB
 from sqlalchemy.orm import backref, declared_attr, relationship
 from sqlalchemy.sql import func, text
 
@@ -57,6 +57,7 @@ class User(SoftDeleteMixin, Base):
     # Relationships
     subscriptions = relationship("Subscription", back_populates="user", lazy="dynamic")
     blog_posts = relationship("BlogPost", back_populates="author", lazy="dynamic")
+    notifications = relationship("Notification", back_populates="user", lazy="dynamic")
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -83,6 +84,12 @@ class Study(SoftDeleteMixin, Base):
     report_url_basic = Column(String(2000), nullable=True)
     report_url_premium = Column(String(2000), nullable=True)
     is_active = Column(Boolean, default=True)
+
+    # Imported data (CSV/Excel)
+    imported_data = Column(JSONB, nullable=True)
+    imported_columns = Column(JSONB, nullable=True)
+    imported_row_count = Column(Integer, nullable=True)
+    import_source = Column(String(255), nullable=True)  # Original filename
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())

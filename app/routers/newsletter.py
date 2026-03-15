@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 
@@ -11,12 +11,15 @@ from app.models import NewsletterSubscriber, User
 from app.dependencies import get_current_user
 from app.permissions import check_blog_permission
 from app.schemas.newsletter import NewsletterSubscribe, NewsletterSubscriberResponse
+from app.rate_limit import limiter
 
 router = APIRouter()
 
 
 @router.post("/api/newsletter/subscribe", status_code=201)
+@limiter.limit("10/minute")
 async def newsletter_subscribe(
+    request: Request,
     data: NewsletterSubscribe,
     db: Session = Depends(get_db),
 ):
@@ -58,7 +61,9 @@ async def newsletter_subscribe(
 
 
 @router.get("/api/newsletter/confirm/{token}")
+@limiter.limit("20/minute")
 async def newsletter_confirm(
+    request: Request,
     token: str,
     db: Session = Depends(get_db),
 ):
@@ -85,7 +90,9 @@ async def newsletter_confirm(
 
 
 @router.get("/api/newsletter/unsubscribe/{token}")
+@limiter.limit("20/minute")
 async def newsletter_unsubscribe(
+    request: Request,
     token: str,
     db: Session = Depends(get_db),
 ):
@@ -112,7 +119,9 @@ async def newsletter_unsubscribe(
 
 
 @router.get("/api/newsletter/subscribers", response_model=List[NewsletterSubscriberResponse])
+@limiter.limit("20/minute")
 async def get_newsletter_subscribers(
+    request: Request,
     status: Optional[str] = "active",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

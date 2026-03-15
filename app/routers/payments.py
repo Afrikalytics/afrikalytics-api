@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -18,6 +19,7 @@ from app.dependencies import get_current_user
 from app.services.email import send_email
 from app.services.email_templates import payment_upgrade_email, payment_new_user_email
 from app.schemas.payments import PaymentCreate
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,9 @@ PAYDUNYA_MODE = settings.paydunya_mode
 
 
 @router.post("/api/paydunya/create-invoice")
+@limiter.limit("10/minute")
 async def create_paydunya_invoice(
+    request: Request,
     data: PaymentCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -118,10 +122,24 @@ async def create_paydunya_invoice(
 
 
 @router.post("/api/paydunya/webhook")
+@limiter.limit("20/minute")
 async def paydunya_webhook(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    # Verify HMAC-SHA512 signature from PAYDUNYA-SIGNATURE header
+    body = await request.body()
+    signature = request.headers.get("PAYDUNYA-SIGNATURE", "")
+    if PAYDUNYA_MASTER_KEY:
+        expected_signature = hmac.new(
+            PAYDUNYA_MASTER_KEY.encode(),
+            body,
+            hashlib.sha512,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            logger.warning("PayDunya webhook HMAC signature mismatch - rejecting")
+            raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
     try:
         content_type = request.headers.get("content-type", "")
 
@@ -367,7 +385,9 @@ async def paydunya_webhook(
 
 
 @router.get("/api/paydunya/verify/{token}")
+@limiter.limit("30/minute")
 async def verify_payment(
+    request: Request,
     token: str,
     current_user: User = Depends(get_current_user),
 ):

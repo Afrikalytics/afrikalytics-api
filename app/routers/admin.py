@@ -22,13 +22,16 @@ from app.services.email_templates import admin_user_created_email
 from app.services.audit import log_action
 from app.schemas.admin import AdminUserCreate, AdminUserUpdate, AdminUserResponse
 from app.schemas.audit import AuditLogResponse, AuditLogListResponse
+from app.rate_limit import limiter
 
 router = APIRouter()
 
 
 @router.get("/api/admin/roles")
+@limiter.limit("20/minute")
 async def get_admin_roles(
-    current_user: User = Depends(get_current_user)
+    request: Request,
+    current_user: User = Depends(get_current_user),
 ):
     """
     Récupérer la liste des rôles admin disponibles.
@@ -50,7 +53,9 @@ async def get_admin_roles(
 
 
 @router.get("/api/admin/users", response_model=List[AdminUserResponse])
+@limiter.limit("20/minute")
 async def get_all_users(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -73,7 +78,9 @@ async def get_all_users(
 
 
 @router.get("/api/admin/users/{user_id}", response_model=AdminUserResponse)
+@limiter.limit("20/minute")
 async def get_user_by_id(
+    request: Request,
     user_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -97,6 +104,7 @@ async def get_user_by_id(
 
 
 @router.post("/api/admin/users", response_model=AdminUserResponse, status_code=201)
+@limiter.limit("10/minute")
 async def create_user_admin(
     data: AdminUserCreate,
     request: Request,
@@ -166,6 +174,7 @@ async def create_user_admin(
 
 
 @router.put("/api/admin/users/{user_id}", response_model=AdminUserResponse)
+@limiter.limit("10/minute")
 async def update_user_admin(
     user_id: int,
     data: AdminUserUpdate,
@@ -243,6 +252,7 @@ async def update_user_admin(
 
 
 @router.delete("/api/admin/users/{user_id}")
+@limiter.limit("5/minute")
 async def delete_user_admin(
     user_id: int,
     request: Request,
@@ -295,6 +305,7 @@ async def delete_user_admin(
 
 
 @router.put("/api/admin/users/{user_id}/toggle-active")
+@limiter.limit("10/minute")
 async def toggle_user_active(
     user_id: int,
     request: Request,
@@ -331,7 +342,9 @@ async def toggle_user_active(
 
 
 @router.get("/api/admin/audit-log", response_model=AuditLogListResponse)
+@limiter.limit("20/minute")
 async def get_audit_logs(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     action: Optional[str] = None,
