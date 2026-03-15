@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from database import get_db
-from models import User, Subscription, Report
-from auth import hash_password, verify_password
+from models import User, Subscription, Report, TokenBlacklist
+from auth import hash_password, verify_password, decode_access_token
 from app.dependencies import get_current_user
 from app.schemas.auth import UserResponse
 from app.schemas.users import UserCreate, PasswordChange, EnterpriseUserAdd
@@ -231,6 +231,7 @@ async def deactivate_user(
 @router.put("/api/users/change-password")
 async def change_password(
     data: PasswordChange,
+    authorization: str = Header(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -246,6 +247,23 @@ async def change_password(
 
     # Mettre a jour le mot de passe
     current_user.hashed_password = hash_password(data.new_password)
+
+    # Blacklist the current token to force re-authentication
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.replace("Bearer ", "")
+        payload = decode_access_token(token)
+        if payload:
+            jti = payload.get("jti")
+            if jti:
+                existing = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+                if not existing:
+                    blacklisted = TokenBlacklist(
+                        jti=jti,
+                        user_id=current_user.id,
+                        expires_at=datetime.fromtimestamp(payload.get("exp")),
+                    )
+                    db.add(blacklisted)
+
     db.commit()
 
     # Envoyer email de confirmation

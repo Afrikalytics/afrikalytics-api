@@ -13,18 +13,13 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from database import get_db
-from models import User, Subscription
+from models import User, Subscription, TokenBlacklist
 from auth import hash_password
 from app.dependencies import get_current_user
 from app.services.email import send_email
 from app.schemas.payments import PaymentCreate
 
 VALID_PLANS = {"basic", "professionnel", "entreprise"}
-
-# In-memory set of processed webhook tokens to prevent replay attacks.
-# NOTE: This is reset on server restart. For multi-worker deployments,
-# use a DB-backed solution (e.g., a processed_webhooks table).
-_processed_invoice_tokens: set = set()
 
 router = APIRouter()
 
@@ -167,8 +162,9 @@ async def paydunya_webhook(
             logger.warning("PayDunya webhook hash mismatch - rejecting")
             raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
-        # Idempotency: reject already-processed webhooks (replay attack prevention)
-        if invoice_token in _processed_invoice_tokens:
+        # Idempotency: reject already-processed webhooks (DB-backed, survives restarts)
+        existing_blacklist = db.query(TokenBlacklist).filter(TokenBlacklist.jti == f"webhook_{invoice_token}").first()
+        if existing_blacklist:
             logger.info(f"PayDunya webhook already processed for token {invoice_token[:8]}... - ignoring")
             return {"status": "already_processed", "reason": "This webhook has already been processed"}
 
@@ -277,8 +273,14 @@ async def paydunya_webhook(
                 """
             )
 
-            # Mark this webhook as processed (idempotency)
-            _processed_invoice_tokens.add(invoice_token)
+            # Mark this webhook as processed (idempotency — DB-backed)
+            webhook_blacklist = TokenBlacklist(
+                jti=f"webhook_{invoice_token}",
+                user_id=existing_user.id if existing_user else new_user.id,
+                expires_at=datetime.utcnow() + timedelta(days=90),
+            )
+            db.add(webhook_blacklist)
+            db.commit()
 
             return {"status": "success", "action": "user_upgraded", "user_id": existing_user.id}
 
@@ -335,8 +337,14 @@ async def paydunya_webhook(
                 """
             )
 
-            # Mark this webhook as processed (idempotency)
-            _processed_invoice_tokens.add(invoice_token)
+            # Mark this webhook as processed (idempotency — DB-backed)
+            webhook_blacklist = TokenBlacklist(
+                jti=f"webhook_{invoice_token}",
+                user_id=existing_user.id if existing_user else new_user.id,
+                expires_at=datetime.utcnow() + timedelta(days=90),
+            )
+            db.add(webhook_blacklist)
+            db.commit()
 
             return {"status": "success", "action": "user_created", "user_id": new_user.id}
 

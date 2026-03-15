@@ -47,7 +47,9 @@ ADMIN_ROLES = {
 def check_admin_permission(user, permission: str) -> bool:
     if not user.is_admin:
         return False
-    role = user.admin_role or "super_admin"
+    role = user.admin_role
+    if not role:
+        return False
     if role not in ADMIN_ROLES:
         return False
     return ADMIN_ROLES[role].get(permission, False)

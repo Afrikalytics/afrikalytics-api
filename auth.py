@@ -1,7 +1,8 @@
 import uuid
 
 import bcrypt
-from jose import JWTError, ExpiredSignatureError, jwt
+import jwt
+from jwt.exceptions import ExpiredSignatureError, PyJWTError
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
@@ -78,5 +79,5 @@ def decode_access_token(token: str) -> dict:
         return payload
     except ExpiredSignatureError:
         raise ValueError("Token expiré")
-    except JWTError:
+    except PyJWTError:
         return None

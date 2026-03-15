@@ -214,6 +214,25 @@ async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = D
     if not user:
         raise HTTPException(status_code=401, detail="Code invalide")
 
+    # Brute-force protection: count recently used (failed) codes for this user
+    recent_failed = db.query(VerificationCode).filter(
+        VerificationCode.user_id == user.id,
+        VerificationCode.is_used == True,
+        VerificationCode.created_at > datetime.utcnow() - timedelta(minutes=10)
+    ).count()
+
+    if recent_failed >= 5:
+        # Invalidate all remaining active codes
+        db.query(VerificationCode).filter(
+            VerificationCode.user_id == user.id,
+            VerificationCode.is_used == False,
+        ).update({"is_used": True})
+        db.commit()
+        raise HTTPException(
+            status_code=429,
+            detail="Trop de tentatives. Veuillez vous reconnecter pour recevoir un nouveau code."
+        )
+
     # Chercher le code valide
     verification = db.query(VerificationCode).filter(
         VerificationCode.user_id == user.id,
@@ -223,6 +242,15 @@ async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = D
     ).first()
 
     if not verification:
+        # Mark a failed attempt by creating a used verification code entry
+        failed_entry = VerificationCode(
+            user_id=user.id,
+            code="000000",
+            expires_at=datetime.utcnow(),
+            is_used=True,
+        )
+        db.add(failed_entry)
+        db.commit()
         raise HTTPException(status_code=401, detail="Code invalide ou expiré")
 
     # Marquer le code comme utilise
@@ -367,6 +395,13 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
     if payload.get("type") != "reset":
         raise HTTPException(status_code=400, detail="Lien invalide")
 
+    # Verifier que le token n'a pas deja ete utilise
+    reset_jti = payload.get("jti")
+    if reset_jti:
+        already_used = db.query(TokenBlacklist).filter(TokenBlacklist.jti == reset_jti).first()
+        if already_used:
+            raise HTTPException(status_code=400, detail="Ce lien a déjà été utilisé")
+
     email = payload.get("sub")
     if not email:
         raise HTTPException(status_code=400, detail="Lien invalide")
@@ -383,6 +418,17 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
 
     # Mettre a jour le mot de passe
     user.hashed_password = hash_password(data.new_password)
+
+    # Blacklist the reset token to prevent reuse
+    jti = payload.get("jti")
+    if jti:
+        blacklisted = TokenBlacklist(
+            jti=jti,
+            user_id=user.id,
+            expires_at=datetime.fromtimestamp(payload.get("exp")),
+        )
+        db.add(blacklisted)
+
     db.commit()
 
     # Envoyer email de confirmation
