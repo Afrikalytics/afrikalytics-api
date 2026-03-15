@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 
 import sentry_sdk
@@ -152,7 +152,7 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow()}
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc)}
 
 
 if __name__ == "__main__":

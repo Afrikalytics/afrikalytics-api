@@ -1,6 +1,5 @@
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import os
 from dotenv import load_dotenv
 
@@ -32,8 +31,9 @@ engine = create_engine(
 # Session locale
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base pour les modèles
-Base = declarative_base()
+# Base pour les modèles (SQLAlchemy 2.0 style)
+class Base(DeclarativeBase):
+    pass
 
 # Dépendance pour obtenir la session DB
 def get_db():

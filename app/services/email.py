@@ -2,8 +2,11 @@
 Service d'envoi d'emails via Resend.
 Extrait de main.py pour centraliser la logique email.
 """
+import logging
 import os
 import resend
+
+logger = logging.getLogger(__name__)
 
 # Configurer Resend
 resend.api_key = os.getenv("RESEND_API_KEY")
@@ -32,5 +35,5 @@ def send_email(to: str, subject: str, html: str) -> bool:
         resend.Emails.send(params)
         return True
     except Exception as e:
-        print(f"Erreur envoi email: {e}")
+        logger.error("Erreur envoi email: %s", e)
         return False
