@@ -62,6 +62,8 @@ def get_insight(insight_id: int, db: Session = Depends(get_db), current_user: Us
     insight = db.query(Insight).filter(Insight.id == insight_id).first()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight not found")
+    if not insight.is_published and not check_admin_permission(current_user, "insights"):
+        raise HTTPException(status_code=404, detail="Insight not found")
     return convert_insight_images(insight)
 
 

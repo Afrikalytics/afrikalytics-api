@@ -33,6 +33,7 @@ async def get_report_by_study(study_id: int, db: Session = Depends(get_db), curr
     )
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    check_content_access(current_user, report_type=report.report_type)
     return report
 
 
@@ -51,6 +52,7 @@ async def get_report_by_study_and_type(
     )
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    check_content_access(current_user, report_type=report.report_type)
     return report
 
 
@@ -189,6 +191,9 @@ async def track_download(report_id: int, db: Session = Depends(get_db), current_
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    if not report.is_available and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    check_content_access(current_user, report_type=report.report_type)
 
     # Atomic increment to avoid race conditions
     db.execute(
@@ -221,6 +226,7 @@ async def track_download_by_type(
     )
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
+    check_content_access(current_user, report_type=report.report_type)
 
     # Atomic increment to avoid race conditions
     db.execute(
