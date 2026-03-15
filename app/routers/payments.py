@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from database import get_db
 from models import User, Subscription, TokenBlacklist
+from app.models import Payment
 from auth import hash_password
 from app.dependencies import get_current_user
 from app.services.email import send_email
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 VALID_PLANS = {"basic", "professionnel", "entreprise"}
+
+PLAN_PRICES = {
+    "professionnel": 295000,
+    "entreprise": 500000,
+}
 
 router = APIRouter()
 
@@ -46,11 +52,7 @@ async def create_paydunya_invoice(
     else:
         base_url = "https://app.paydunya.com/sandbox-api/v1"
 
-    prices = {
-        "professionnel": 295000,
-        "entreprise": 500000,
-    }
-    amount = prices.get(data.plan, 295000)
+    amount = PLAN_PRICES.get(data.plan, 295000)
 
     invoice_data = {
         "invoice": {
@@ -260,6 +262,29 @@ async def paydunya_webhook(
 
             db.commit()
 
+            # Resolve subscription for payment record
+            active_sub = existing_subscription or db.execute(
+                select(Subscription).where(
+                    Subscription.user_id == existing_user.id,
+                    Subscription.status == "active"
+                )
+            ).scalar_one_or_none()
+
+            # Create Payment record
+            payment_record = Payment(
+                user_id=existing_user.id,
+                subscription_id=active_sub.id if active_sub else None,
+                amount=PLAN_PRICES.get(plan, 295000),
+                provider="paydunya",
+                provider_ref=token,
+                provider_status="completed",
+                plan=plan,
+                status="completed",
+                metadata_json={"invoice_data": data},
+            )
+            db.add(payment_record)
+            db.commit()
+
             send_email(
                 to=email,
                 subject="Bienvenue dans Afrikalytics Premium !",
@@ -302,6 +327,22 @@ async def paydunya_webhook(
             )
             db.add(new_subscription)
             db.commit()
+            db.refresh(new_subscription)
+
+            # Create Payment record
+            payment_record = Payment(
+                user_id=new_user.id,
+                subscription_id=new_subscription.id,
+                amount=PLAN_PRICES.get(plan, 295000),
+                provider="paydunya",
+                provider_ref=token,
+                provider_status="completed",
+                plan=plan,
+                status="completed",
+                metadata_json={"invoice_data": data},
+            )
+            db.add(payment_record)
+            db.commit()
 
             send_email(
                 to=email,
@@ -321,8 +362,7 @@ async def paydunya_webhook(
             return {"status": "success", "action": "user_created", "user_id": new_user.id}
 
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Erreur webhook PayDunya")
+        logger.exception("Erreur webhook PayDunya")
         return {"status": "error", "reason": "Erreur interne de traitement"}
 
 

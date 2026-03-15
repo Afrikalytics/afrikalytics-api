@@ -15,6 +15,7 @@ from app.utils import generate_slug, ensure_unique_slug
 from app.dependencies import get_current_user
 from app.permissions import check_blog_permission, get_paginated_results_stmt
 from app.services.audit import log_action
+from app.services.cache import cache_get, cache_set, cache_delete_pattern
 from app.schemas.blog import (
     BlogPostCreate, BlogPostUpdate, BlogPostResponse, BlogPostPublic,
     BlogPostListResponse, BlogPostPublicListResponse,
@@ -75,6 +76,9 @@ async def create_blog_post(
         )
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
+
+    # Invalidate public blog cache on mutation
+    cache_delete_pattern("blog:*")
 
     response = BlogPostResponse.from_orm(new_post)
     response.author_name = current_user.full_name
@@ -188,6 +192,9 @@ async def update_blog_post(
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
+    # Invalidate public blog cache on mutation
+    cache_delete_pattern("blog:*")
+
     response = BlogPostResponse.from_orm(post)
     response.author_name = post.author.full_name
     return response
@@ -222,6 +229,10 @@ async def delete_blog_post(
 
     db.delete(post)
     db.commit()
+
+    # Invalidate public blog cache on mutation
+    cache_delete_pattern("blog:*")
+
     return {"message": "Article supprimé avec succès"}
 
 
@@ -255,6 +266,9 @@ async def publish_blog_post(
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
+    # Invalidate public blog cache on mutation
+    cache_delete_pattern("blog:*")
+
     response = BlogPostResponse.from_orm(post)
     response.author_name = post.author.full_name
     return response
@@ -270,6 +284,12 @@ async def get_public_blog_posts(
     db: Session = Depends(get_db),
 ):
     per_page = min(per_page, 50)
+
+    # Check cache
+    cache_key = f"blog:posts:{page}:{per_page}:{category or 'all'}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
 
     stmt = select(BlogPost).options(joinedload(BlogPost.author)).where(
         BlogPost.status == "published",
@@ -288,10 +308,12 @@ async def get_public_blog_posts(
         post_dict.author_name = post.author.full_name
         items_public.append(post_dict)
 
-    return {
+    response = {
         **result,
-        "items": items_public,
+        "items": [item.model_dump() for item in items_public],
     }
+    cache_set(cache_key, response, ttl=300)
+    return response
 
 
 @router.get("/api/blog/public/posts/{slug}", response_model=BlogPostPublic)
@@ -299,6 +321,12 @@ async def get_public_blog_post_by_slug(
     slug: str,
     db: Session = Depends(get_db),
 ):
+    # Check cache
+    cache_key = f"blog:post:{slug}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     post = db.execute(
         select(BlogPost).options(joinedload(BlogPost.author)).where(
             BlogPost.slug == slug,
@@ -313,11 +341,17 @@ async def get_public_blog_post_by_slug(
 
     response = BlogPostPublic.from_orm(post)
     response.author_name = post.author.full_name
+    cache_set(cache_key, response.model_dump(), ttl=300)
     return response
 
 
 @router.get("/api/blog/public/categories", response_model=List[CategoryResponse])
 async def get_blog_categories(db: Session = Depends(get_db)):
+    # Check cache
+    cached = cache_get("blog:categories")
+    if cached:
+        return cached
+
     categories = db.execute(
         select(
             BlogPost.category,
@@ -328,10 +362,12 @@ async def get_blog_categories(db: Session = Depends(get_db)):
         ).group_by(BlogPost.category)
     ).all()
 
-    return [
+    result = [
         {"name": cat.category, "count": cat.count}
         for cat in categories
     ]
+    cache_set("blog:categories", result, ttl=900)
+    return result
 
 
 @router.get("/api/blog/public/search", response_model=SearchResponse)
@@ -373,12 +409,21 @@ async def get_popular_posts(
     limit: int = 5,
     db: Session = Depends(get_db),
 ):
+    # Check cache
+    cache_key = f"blog:popular:{limit}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     posts = db.execute(
         select(BlogPost).where(
             BlogPost.status == "published"
         ).order_by(desc(BlogPost.views)).limit(limit)
     ).scalars().all()
-    return posts
+
+    result = [PopularPostResponse.from_orm(p).model_dump() for p in posts]
+    cache_set(cache_key, result, ttl=600)
+    return result
 
 
 @router.get("/api/blog/public/related/{post_id}", response_model=List[BlogPostPublic])

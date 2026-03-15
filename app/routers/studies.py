@@ -17,6 +17,7 @@ from app.dependencies import get_current_user
 from app.permissions import check_admin_permission
 from app.schemas.studies import StudyCreate, StudyUpdate, StudyResponse
 from app.services.audit import log_action
+from app.services.cache import cache_get, cache_set, cache_delete_pattern
 
 router = APIRouter()
 
@@ -43,12 +44,20 @@ async def get_active_studies(db: Session = Depends(get_db), current_user: User =
     """
     Récupérer les études actives (is_active=True) pour le site public.
     """
+    # Check cache
+    cached = cache_get("studies:active")
+    if cached:
+        return cached
+
     studies = db.execute(
         select(Study)
         .where(Study.is_active.is_(True))
         .order_by(Study.created_at.desc())
     ).scalars().all()
-    return studies
+
+    result = [StudyResponse.from_orm(s).model_dump() for s in studies]
+    cache_set("studies:active", result, ttl=300)
+    return result
 
 
 @router.get("/api/studies/{study_id}", response_model=StudyResponse)
@@ -100,6 +109,10 @@ async def create_study(
     db.commit()
     db.refresh(new_study)
 
+    # Invalidate studies cache on mutation
+    cache_delete_pattern("studies:*")
+    cache_delete_pattern("dashboard:*")
+
     # Audit log
     try:
         log_action(
@@ -143,6 +156,10 @@ async def update_study(
 
     db.commit()
     db.refresh(study)
+
+    # Invalidate studies cache on mutation
+    cache_delete_pattern("studies:*")
+    cache_delete_pattern("dashboard:*")
 
     # Audit log
     try:
@@ -193,5 +210,9 @@ async def delete_study(
 
     db.delete(study)
     db.commit()
+
+    # Invalidate studies cache on mutation
+    cache_delete_pattern("studies:*")
+    cache_delete_pattern("dashboard:*")
 
     return {"message": "Étude supprimée avec succès"}

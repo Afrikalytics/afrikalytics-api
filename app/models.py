@@ -113,8 +113,63 @@ class Subscription(Base):
     # Relationships
     user = relationship("User", back_populates="subscriptions")
 
+    __table_args__ = (
+        Index(
+            'uq_one_active_subscription_per_user',
+            'user_id',
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
     def __repr__(self):
         return f"<Subscription {self.user_id} - {self.plan}>"
+
+
+# ================================================================
+# MODEL: Payment
+# ================================================================
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    # Payment details
+    amount = Column(Integer, nullable=False)  # Amount in FCFA (centimes)
+    currency = Column(String(3), default="XOF", server_default=text("'XOF'"))
+
+    # Provider info
+    provider = Column(String(50), nullable=False)  # "paydunya", "woocommerce"
+    provider_ref = Column(String(255), nullable=True, unique=True)  # PayDunya token or WooCommerce order ID
+    provider_status = Column(String(50), nullable=True)  # "completed", "pending", "failed"
+
+    # Payment metadata
+    plan = Column(String(50), nullable=False)
+    payment_method = Column(String(50), nullable=True)  # "mobile_money", "card", etc.
+
+    status = Column(String(20), nullable=False, default="pending", server_default=text("'pending'"))
+
+    metadata_json = Column(JSONB, nullable=True)  # Any additional provider data
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", backref="payments")
+    subscription = relationship("Subscription", backref="payments")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'failed', 'refunded')",
+            name="ck_payments_status"
+        ),
+    )
+
+    def __repr__(self):
+        return f"<Payment {self.id} - {self.provider} - {self.status}>"
 
 
 # ================================================================

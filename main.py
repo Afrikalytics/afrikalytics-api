@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import sentry_sdk
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 from slowapi import _rate_limit_exceeded_handler
@@ -48,8 +49,12 @@ if settings.sentry_dsn:
 
 app = FastAPI(
     title="Afrikalytics API",
-    description="Backend API pour Afrikalytics AI - Intelligence d'Affaires pour l'Afrique",
-    version="1.0.0"
+    description=(
+        "Backend API pour Afrikalytics AI - Intelligence d'Affaires pour l'Afrique.\n\n"
+        "**Versioning:** All endpoints are available under `/api/v1/`. "
+        "Legacy `/api/` paths redirect to `/api/v1/` with HTTP 307."
+    ),
+    version="1.0.0",
 )
 
 # Rate limiter
@@ -72,6 +77,45 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
+# --- API Versioning Middleware ---
+# Rewrite /api/v1/... to /api/... internally so existing route decorators match.
+# This allows clients to use the versioned URL (/api/v1/...) while keeping
+# route definitions unchanged in individual routers.
+@app.middleware("http")
+async def api_version_rewrite(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/v1/"):
+        new_path = "/api/" + path[len("/api/v1/"):]
+        request.scope["path"] = new_path
+    return await call_next(request)
+
+
+# --- Backward-Compatibility Redirect ---
+# Redirect legacy /api/... requests (without version prefix) to /api/v1/...
+# Uses 307 Temporary Redirect to preserve the HTTP method (POST, PUT, DELETE, etc.).
+# External webhook callbacks are exempt (providers may not follow POST redirects).
+_REDIRECT_EXEMPT_PATHS = (
+    "/api/paydunya/webhook",
+    "/api/newsletter/confirm",
+    "/api/newsletter/unsubscribe",
+)
+
+
+@app.middleware("http")
+async def api_version_redirect(request: Request, call_next):
+    path = request.url.path
+    # Redirect /api/xxx to /api/v1/xxx, but NOT /api/v1/xxx (already versioned)
+    # and NOT exempt paths (external webhooks/callbacks)
+    if path.startswith("/api/") and not path.startswith("/api/v1/"):
+        if not any(path.startswith(p) for p in _REDIRECT_EXEMPT_PATHS):
+            new_path = "/api/v1/" + path[len("/api/"):]
+            # Preserve query string if present
+            query = request.url.query
+            redirect_url = new_path + (f"?{query}" if query else "")
+            return RedirectResponse(url=redirect_url, status_code=307)
+    return await call_next(request)
+
+
 # --- CSRF Protection Middleware ---
 # Require X-Requested-With header on state-changing requests (POST, PUT, DELETE, PATCH).
 # Browsers block cross-origin custom headers unless explicitly allowed by CORS preflight,
@@ -81,6 +125,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         "/api/paydunya/webhook",
         "/api/newsletter/confirm",
         "/api/newsletter/unsubscribe",
+        "/api/v1/paydunya/webhook",
+        "/api/v1/newsletter/confirm",
+        "/api/v1/newsletter/unsubscribe",
     )
 
     async def dispatch(self, request: Request, call_next):
@@ -155,8 +202,10 @@ def read_root():
     return {
         "message": "Bienvenue sur l'API Afrikalytics AI",
         "version": "1.0.0",
+        "api_version": "v1",
         "status": "online",
-        "docs": "/docs"
+        "docs": "/docs",
+        "endpoints": "/api/v1/"
     }
 
 

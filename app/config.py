@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     frontend_url: str = Field(default="")
     next_public_api_url: str = Field(default="")
 
+    # --- Redis ---
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL",
+    )
+
     # --- Integrations ---
     zapier_secret: str = Field(default="")
     cron_secret: str = Field(default="")

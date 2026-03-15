@@ -27,6 +27,14 @@ from app.auth import hash_password, create_access_token
 from app.models import User, Study, Insight, Report, BlogPost
 
 # ---------------------------------------------------------------------------
+# Shared test passwords (not real credentials — used only in test fixtures)
+# ---------------------------------------------------------------------------
+TEST_USER_PW = "TestPassword123!"       # noqa: S105
+ADMIN_PW = "AdminPassword123!"          # noqa: S105
+CONTENT_ADMIN_PW = "ContentAdmin123!"   # noqa: S105
+ENTERPRISE_PW = "Enterprise123!"        # noqa: S105
+
+# ---------------------------------------------------------------------------
 # Test database (SQLite in-memory)
 # ---------------------------------------------------------------------------
 SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
@@ -154,7 +162,7 @@ def test_user(db) -> User:
     user = User(
         email="testuser@example.com",
         full_name="Test User",
-        hashed_password=hash_password("TestPassword123!"),
+        hashed_password=hash_password(TEST_USER_PW),
         plan="basic",
         is_active=True,
         is_admin=False,
@@ -171,7 +179,7 @@ def admin_user(db) -> User:
     user = User(
         email="admin@example.com",
         full_name="Admin User",
-        hashed_password=hash_password("AdminPassword123!"),
+        hashed_password=hash_password(ADMIN_PW),
         plan="entreprise",
         is_active=True,
         is_admin=True,
@@ -192,7 +200,7 @@ def content_admin_user(db) -> User:
     user = User(
         email="content_admin@example.com",
         full_name="Content Admin",
-        hashed_password=hash_password("ContentAdmin123!"),
+        hashed_password=hash_password(CONTENT_ADMIN_PW),
         plan="entreprise",
         is_active=True,
         is_admin=True,
@@ -210,7 +218,7 @@ def enterprise_user(db) -> User:
     user = User(
         email="enterprise@example.com",
         full_name="Enterprise User",
-        hashed_password=hash_password("Enterprise123!"),
+        hashed_password=hash_password(ENTERPRISE_PW),
         plan="entreprise",
         is_active=True,
         is_admin=False,

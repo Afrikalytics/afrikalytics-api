@@ -23,6 +23,7 @@ from app.services.email_templates import (
     team_subscription_expired_email,
 )
 from app.utils import calculate_days_remaining
+from app.services.cache import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,12 @@ async def get_dashboard_stats(
     Récupérer les statistiques du dashboard pour l'utilisateur connecté.
     Adapte les compteurs selon le plan (basic vs premium).
     """
+    # Check cache (per-user, keyed by user id and plan)
+    cache_key = f"dashboard:stats:{current_user.id}:{current_user.plan}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     # Études accessibles (actives)
     studies_accessible = db.execute(
         select(func.count()).select_from(Study).where(Study.is_active.is_(True))
@@ -105,7 +112,7 @@ async def get_dashboard_stats(
         )
     ).scalar()
 
-    return {
+    result = {
         "studies_accessible": studies_count,
         "studies_total": studies_accessible,
         "studies_open": studies_open,
@@ -115,6 +122,8 @@ async def get_dashboard_stats(
         "plan": current_user.plan,
         "is_premium": current_user.plan in ["professionnel", "entreprise"],
     }
+    cache_set(cache_key, result, ttl=120)
+    return result
 
 
 @router.post("/api/subscriptions/check-expiry")
