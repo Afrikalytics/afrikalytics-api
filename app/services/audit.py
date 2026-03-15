@@ -2,13 +2,12 @@
 Service d'audit logging pour tracer les actions administratives.
 Chaque mutation (create, update, delete, publish, toggle) est enregistree.
 """
-import json
 import logging
 
 from sqlalchemy.orm import Session
 from fastapi import Request
 
-from models import AuditLog
+from app.models import AuditLog
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ def log_action(
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
-            details=json.dumps(details, ensure_ascii=False) if details else None,
+            details=details,
             ip_address=ip_address,
         )
         db.add(log)

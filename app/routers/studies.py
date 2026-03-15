@@ -2,16 +2,20 @@
 Router pour les études de marché (CRUD).
 6 endpoints : liste complète, actives, détail, création, mise à jour, suppression.
 """
+import logging
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import User, Study
+logger = logging.getLogger(__name__)
+
+from app.database import get_db
+from app.models import User, Study
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission
-from app.schemas.studies import StudyCreate, StudyResponse
+from app.schemas.studies import StudyCreate, StudyUpdate, StudyResponse
 from app.services.audit import log_action
 
 router = APIRouter()
@@ -28,7 +32,9 @@ async def get_all_studies(
     Récupérer toutes les études, triées par date de création décroissante.
     Supporte la pagination via skip/limit.
     """
-    studies = db.query(Study).order_by(Study.created_at.desc()).offset(skip).limit(limit).all()
+    studies = db.execute(
+        select(Study).order_by(Study.created_at.desc()).offset(skip).limit(limit)
+    ).scalars().all()
     return studies
 
 
@@ -37,12 +43,11 @@ async def get_active_studies(db: Session = Depends(get_db), current_user: User =
     """
     Récupérer les études actives (is_active=True) pour le site public.
     """
-    studies = (
-        db.query(Study)
-        .filter(Study.is_active == True)
+    studies = db.execute(
+        select(Study)
+        .where(Study.is_active.is_(True))
         .order_by(Study.created_at.desc())
-        .all()
-    )
+    ).scalars().all()
     return studies
 
 
@@ -51,7 +56,9 @@ async def get_study(study_id: int, db: Session = Depends(get_db), current_user: 
     """
     Récupérer une étude par son ID.
     """
-    study = db.query(Study).filter(Study.id == study_id).first()
+    study = db.execute(
+        select(Study).where(Study.id == study_id)
+    ).scalar_one_or_none()
     if not study:
         raise HTTPException(status_code=404, detail="Étude non trouvée")
     return study
@@ -100,8 +107,8 @@ async def create_study(
             resource_id=new_study.id, details={"title": new_study.title},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     return new_study
 
@@ -109,13 +116,14 @@ async def create_study(
 @router.put("/api/studies/{study_id}", response_model=StudyResponse)
 async def update_study(
     study_id: int,
-    data: StudyCreate,
+    data: StudyUpdate,
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Modifier une étude existante (Admin avec permission studies).
+    Seuls les champs fournis sont mis à jour (partial update).
     """
     if not check_admin_permission(current_user, "studies"):
         raise HTTPException(
@@ -123,23 +131,15 @@ async def update_study(
             detail="Vous n'avez pas la permission de gérer les études",
         )
 
-    study = db.query(Study).filter(Study.id == study_id).first()
+    study = db.execute(
+        select(Study).where(Study.id == study_id)
+    ).scalar_one_or_none()
     if not study:
         raise HTTPException(status_code=404, detail="Étude non trouvée")
 
-    study.title = data.title
-    study.description = data.description
-    study.category = data.category
-    study.duration = data.duration
-    study.deadline = data.deadline
-    study.status = data.status
-    study.icon = data.icon
-    study.embed_url_particulier = data.embed_url_particulier
-    study.embed_url_entreprise = data.embed_url_entreprise
-    study.embed_url_results = data.embed_url_results
-    study.report_url_basic = data.report_url_basic
-    study.report_url_premium = data.report_url_premium
-    study.is_active = data.is_active
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(study, key, value)
 
     db.commit()
     db.refresh(study)
@@ -151,8 +151,8 @@ async def update_study(
             resource_id=study_id, details={"title": study.title},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     return study
 
@@ -173,7 +173,9 @@ async def delete_study(
             detail="Vous n'avez pas la permission de gérer les études",
         )
 
-    study = db.query(Study).filter(Study.id == study_id).first()
+    study = db.execute(
+        select(Study).where(Study.id == study_id)
+    ).scalar_one_or_none()
     if not study:
         raise HTTPException(status_code=404, detail="Étude non trouvée")
 
@@ -186,8 +188,8 @@ async def delete_study(
             resource_id=study_id, details={"deleted_title": deleted_title},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     db.delete(study)
     db.commit()

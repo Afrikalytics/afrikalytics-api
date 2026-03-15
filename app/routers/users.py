@@ -13,26 +13,34 @@ Endpoints:
     POST   /api/enterprise/team/add        — Ajouter un membre
     DELETE /api/enterprise/team/{member_id} — Retirer un membre
 """
-import html
 import logging
-import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Header
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from database import get_db
-from models import User, Subscription, Report, TokenBlacklist
-from auth import hash_password, verify_password, decode_access_token
+from app.config import get_settings
+from app.database import get_db
+from app.models import User, Subscription, TokenBlacklist
+from app.auth import hash_password, verify_password, decode_access_token
 from app.dependencies import get_current_user
 from app.schemas.auth import UserResponse
 from app.schemas.users import UserCreate, PasswordChange, EnterpriseUserAdd
 from app.services.email import send_email
+from app.services.email_templates import (
+    password_changed_email,
+    enterprise_team_join_email,
+    enterprise_team_invite_email,
+    enterprise_team_removal_email,
+)
 from app.utils import calculate_days_remaining, validate_password
 
 logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 # Quotas de tokens par plan (limites mensuelles)
 PLAN_QUOTAS = {
@@ -58,7 +66,7 @@ PLAN_QUOTAS = {
 
 router = APIRouter(tags=["Users"])
 
-ZAPIER_SECRET = os.getenv("ZAPIER_SECRET", "")
+ZAPIER_SECRET = settings.zapier_secret
 if not ZAPIER_SECRET:
     logger.warning("ZAPIER_SECRET is not set. Zapier endpoints will return 503.")
 
@@ -79,7 +87,9 @@ async def create_user_from_zapier(
     if not x_zapier_secret or x_zapier_secret != ZAPIER_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    existing_user = db.query(User).filter(User.email == data.email).first()
+    existing_user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
     if existing_user:
         existing_user.plan = data.plan
         existing_user.is_active = True
@@ -136,7 +146,7 @@ async def get_user_quota(
     quotas = PLAN_QUOTAS.get(plan, PLAN_QUOTAS["basic"])
 
     # Debut du mois en cours
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     # TODO: A per-user download tracking table is needed to accurately count
@@ -148,10 +158,12 @@ async def get_user_quota(
     days_remaining = None
     subscription_end = None
     if plan in ["professionnel", "entreprise"]:
-        subscription = db.query(Subscription).filter(
-            Subscription.user_id == current_user.id,
-            Subscription.status == "active",
-        ).first()
+        subscription = db.execute(
+            select(Subscription).where(
+                Subscription.user_id == current_user.id,
+                Subscription.status == "active",
+            )
+        ).scalar_one_or_none()
         if subscription and subscription.end_date:
             days_remaining = calculate_days_remaining(subscription.end_date)
             subscription_end = subscription.end_date.isoformat()
@@ -198,11 +210,13 @@ async def get_user(
     """Recuperer un utilisateur par son ID (authentification requise)."""
     # Non-admin users can only view their own profile
     if not current_user.is_admin and current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Acc\u00e8s non autoris\u00e9")
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.execute(
+        select(User).where(User.id == user_id)
+    ).scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur non trouv\u00e9")
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
     return user
 
 
@@ -218,7 +232,9 @@ async def deactivate_user(
     if not x_zapier_secret or x_zapier_secret != ZAPIER_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.execute(
+        select(User).where(User.id == user_id)
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
@@ -255,7 +271,9 @@ async def change_password(
         if payload:
             jti = payload.get("jti")
             if jti:
-                existing = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+                existing = db.execute(
+                    select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+                ).scalar_one_or_none()
                 if not existing:
                     blacklisted = TokenBlacklist(
                         jti=jti,
@@ -270,14 +288,7 @@ async def change_password(
     send_email(
         to=current_user.email,
         subject="Mot de passe modifié - Afrikalytics",
-        html=f"""
-            <h2>Mot de passe modifié</h2>
-            <p>Bonjour {html.escape(current_user.full_name)},</p>
-            <p>Votre mot de passe Afrikalytics a été modifié avec succès.</p>
-            <p>Si vous n'êtes pas à l'origine de cette modification, contactez-nous immédiatement.</p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=password_changed_email(current_user.full_name),
     )
 
     return {"message": "Mot de passe modifié avec succès"}
@@ -307,9 +318,9 @@ async def get_enterprise_team(
         )
 
     # Recuperer les sous-utilisateurs
-    team_members = db.query(User).filter(
-        User.parent_user_id == current_user.id
-    ).all()
+    team_members = db.execute(
+        select(User).where(User.parent_user_id == current_user.id)
+    ).scalars().all()
 
     return {
         "owner": {
@@ -355,9 +366,11 @@ async def add_enterprise_team_member(
         )
 
     # Compter les membres actuels
-    current_members = db.query(User).filter(
-        User.parent_user_id == current_user.id
-    ).count()
+    current_members = db.execute(
+        select(func.count()).select_from(User).where(
+            User.parent_user_id == current_user.id
+        )
+    ).scalar()
 
     if current_members >= 4:  # 4 membres + 1 proprietaire = 5 max
         raise HTTPException(
@@ -366,7 +379,9 @@ async def add_enterprise_team_member(
         )
 
     # Verifier si l'email existe deja
-    existing_user = db.query(User).filter(User.email == data.email).first()
+    existing_user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
 
     if existing_user:
         # CAS : Utilisateur deja dans une equipe entreprise
@@ -387,14 +402,16 @@ async def add_enterprise_team_member(
 
         # Si l'utilisateur avait un abonnement Professionnel, on l'annule
         if old_plan == "professionnel":
-            active_subscription = db.query(Subscription).filter(
-                Subscription.user_id == existing_user.id,
-                Subscription.status == "active"
-            ).first()
+            active_subscription = db.execute(
+                select(Subscription).where(
+                    Subscription.user_id == existing_user.id,
+                    Subscription.status == "active"
+                )
+            ).scalar_one_or_none()
 
             if active_subscription:
                 active_subscription.status = "cancelled"
-                active_subscription.end_date = datetime.utcnow()
+                active_subscription.end_date = datetime.now(timezone.utc)
 
         # Mettre a jour l'utilisateur existant
         existing_user.plan = "entreprise"
@@ -407,25 +424,7 @@ async def add_enterprise_team_member(
         email_sent = send_email(
             to=existing_user.email,
             subject="Vous avez rejoint une équipe Entreprise sur Afrikalytics",
-            html=f"""
-                <h2>Bonne nouvelle !</h2>
-                <p>Bonjour {html.escape(existing_user.full_name)},</p>
-                <p><strong>{html.escape(current_user.full_name)}</strong> vous a ajouté(e) à son équipe Entreprise sur Afrikalytics.</p>
-                <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                    <p><strong>Votre nouveau plan :</strong> Entreprise</p>
-                    <p><strong>Ancien plan :</strong> {old_plan.capitalize()}</p>
-                    {"<p style='color: #e74c3c;'><strong>Note :</strong> Votre abonnement Professionnel a été annulé.</p>" if old_plan == "professionnel" else ""}
-                </div>
-                <p>Vous pouvez continuer à utiliser votre compte avec vos identifiants habituels.</p>
-                <p style="margin: 30px 0;">
-                    <a href="https://dashboard.afrikalytics.com/login"
-                       style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                        Accéder au dashboard
-                    </a>
-                </p>
-                <hr>
-                <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-            """
+            html=enterprise_team_join_email(existing_user.full_name, current_user.full_name, old_plan),
         )
 
         return {
@@ -460,25 +459,7 @@ async def add_enterprise_team_member(
     send_email(
         to=new_member.email,
         subject="Vous êtes invité(e) à rejoindre Afrikalytics",
-        html=f"""
-            <h2>Bienvenue sur Afrikalytics AI !</h2>
-            <p>Bonjour {html.escape(new_member.full_name)},</p>
-            <p><strong>{html.escape(current_user.full_name)}</strong> vous a invité(e) à rejoindre son équipe sur Afrikalytics.</p>
-            <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                <p><strong>Email :</strong> {html.escape(new_member.email)}</p>
-                <p><strong>Mot de passe temporaire :</strong> {html.escape(temp_password)}</p>
-                <p><strong>Plan :</strong> Entreprise</p>
-            </div>
-            <p style="color: #e74c3c;">Veuillez changer votre mot de passe après votre première connexion.</p>
-            <p style="margin: 30px 0;">
-                <a href="https://dashboard.afrikalytics.com/login"
-                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Se connecter
-                </a>
-            </p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=enterprise_team_invite_email(new_member.full_name, new_member.email, current_user.full_name, temp_password),
     )
 
     return {
@@ -515,10 +496,12 @@ async def remove_enterprise_team_member(
             detail="Seul le propriétaire du compte peut retirer des membres"
         )
 
-    member = db.query(User).filter(
-        User.id == member_id,
-        User.parent_user_id == current_user.id
-    ).first()
+    member = db.execute(
+        select(User).where(
+            User.id == member_id,
+            User.parent_user_id == current_user.id
+        )
+    ).scalar_one_or_none()
 
     if not member:
         raise HTTPException(
@@ -539,24 +522,7 @@ async def remove_enterprise_team_member(
     send_email(
         to=member_email,
         subject="Modification de votre accès Afrikalytics",
-        html=f"""
-            <h2>Changement de votre plan</h2>
-            <p>Bonjour {html.escape(member_name)},</p>
-            <p>Vous avez été retiré(e) de l'équipe Entreprise de <strong>{html.escape(current_user.full_name)}</strong> sur Afrikalytics.</p>
-            <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                <p><strong>Votre nouveau plan :</strong> Basic (gratuit)</p>
-                <p>Votre compte reste actif et vous pouvez toujours vous connecter.</p>
-            </div>
-            <p>Si vous souhaitez accéder aux fonctionnalités Premium, vous pouvez souscrire à un abonnement individuel.</p>
-            <p style="margin: 30px 0;">
-                <a href="https://afrikalytics.com/premium"
-                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Voir les offres
-                </a>
-            </p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=enterprise_team_removal_email(member_name, current_user.full_name),
     )
 
     return {

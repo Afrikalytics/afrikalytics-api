@@ -178,7 +178,7 @@ class TestAdminUpdateBlogPost:
     ):
         """Publier un article draft doit remplir published_at."""
         # S'assurer que le post est en draft au depart
-        from models import BlogPost
+        from app.models import BlogPost
         db.query(BlogPost).filter(BlogPost.id == blog_post.id).update(
             {"status": "draft", "published_at": None}
         )
@@ -357,7 +357,7 @@ class TestPublicBlogPostBySlug:
 
     def test_get_post_by_slug_increments_views(self, client, blog_post, db):
         """Chaque acces au detail public doit incrementer le compteur de vues."""
-        from models import BlogPost
+        from app.models import BlogPost
         initial_views = blog_post.views
 
         client.get(f"/api/blog/public/posts/{blog_post.slug}")

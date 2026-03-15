@@ -121,15 +121,15 @@ class TestMySubscription:
         self, client, db, enterprise_user, enterprise_auth_headers
     ):
         """Un utilisateur avec un abonnement actif doit obtenir ses details."""
-        from models import Subscription
-        from datetime import datetime, timedelta
+        from app.models import Subscription
+        from datetime import datetime, timedelta, timezone
 
         subscription = Subscription(
             user_id=enterprise_user.id,
             plan="entreprise",
             status="active",
-            start_date=datetime.utcnow(),
-            end_date=datetime.utcnow() + timedelta(days=30),
+            start_date=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) + timedelta(days=30),
         )
         db.add(subscription)
         db.commit()

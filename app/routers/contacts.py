@@ -1,15 +1,16 @@
 import html
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import List
 
-from database import get_db
-from models import Contact, User
+from app.database import get_db
+from app.models import Contact, User
 from app.dependencies import get_current_user
-from app.permissions import check_admin_permission
 from app.schemas.contacts import ContactCreate, ContactResponse
 from app.services.email import send_email, CONTACT_EMAIL
+from app.services.email_templates import contact_form_email
 from app.rate_limit import limiter
 
 router = APIRouter()
@@ -35,17 +36,7 @@ async def create_contact(
     send_email(
         to=CONTACT_EMAIL,
         subject=f"Nouveau message de contact - {html.escape(data.name)}",
-        html=f"""
-            <h2>Nouveau message de contact</h2>
-            <p><strong>Nom :</strong> {html.escape(data.name)}</p>
-            <p><strong>Email :</strong> {html.escape(data.email)}</p>
-            <p><strong>Entreprise :</strong> {html.escape(data.company) if data.company else 'Non renseigné'}</p>
-            <hr>
-            <p><strong>Message :</strong></p>
-            <p>{html.escape(data.message)}</p>
-            <hr>
-            <p><em>Message envoyé depuis le formulaire de contact Afrikalytics</em></p>
-        """,
+        html=contact_form_email(data.name, data.email, data.company, data.message),
     )
 
     return new_contact
@@ -55,14 +46,19 @@ async def create_contact(
 async def get_all_contacts(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    include_deleted: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Liste des contacts (admin uniquement). Supporte la pagination via skip/limit."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Acc\u00e8s r\u00e9serv\u00e9 aux administrateurs")
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
 
-    contacts = db.query(Contact).order_by(Contact.created_at.desc()).offset(skip).limit(limit).all()
+    stmt = select(Contact)
+    if not include_deleted:
+        stmt = stmt.where(Contact.deleted_at.is_(None))
+    stmt = stmt.order_by(Contact.created_at.desc()).offset(skip).limit(limit)
+    contacts = db.execute(stmt).scalars().all()
     return contacts
 
 
@@ -74,16 +70,18 @@ async def mark_contact_as_read(
 ):
     """Marquer un contact comme lu (admin uniquement)."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Acc\u00e8s r\u00e9serv\u00e9 aux administrateurs")
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
 
-    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    contact = db.execute(
+        select(Contact).where(Contact.id == contact_id)
+    ).scalar_one_or_none()
     if not contact:
-        raise HTTPException(status_code=404, detail="Contact non trouv\u00e9")
+        raise HTTPException(status_code=404, detail="Contact non trouvé")
 
     contact.is_read = True
     db.commit()
 
-    return {"message": "Contact marqu\u00e9 comme lu"}
+    return {"message": "Contact marqué comme lu"}
 
 
 @router.delete("/api/contacts/{contact_id}")
@@ -94,12 +92,15 @@ async def delete_contact(
 ):
     """Supprimer un contact (admin uniquement)."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Acc\u00e8s r\u00e9serv\u00e9 aux administrateurs")
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
 
-    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    contact = db.execute(
+        select(Contact).where(Contact.id == contact_id)
+    ).scalar_one_or_none()
     if not contact:
-        raise HTTPException(status_code=404, detail="Contact non trouv\u00e9")
+        raise HTTPException(status_code=404, detail="Contact non trouvé")
 
-    db.delete(contact)
+    from datetime import datetime, timezone
+    contact.deleted_at = datetime.now(timezone.utc)
     db.commit()
-    return {"message": "Contact supprim\u00e9 avec succ\u00e8s"}
+    return {"message": "Contact supprimé avec succès"}

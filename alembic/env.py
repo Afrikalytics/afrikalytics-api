@@ -2,16 +2,12 @@
 Alembic environment configuration for Afrikalytics API.
 Reads DATABASE_URL from environment variables (same as database.py).
 """
-import os
 from logging.config import fileConfig
 
-from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
-
-# Load .env file if present
-load_dotenv()
+from app.config import get_settings
 
 # Alembic Config object
 config = context.config
@@ -21,20 +17,16 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Import models metadata for autogenerate support
-from database import Base  # noqa: E402
-import models  # noqa: E402, F401 — force model registration
+from app.database import Base  # noqa: E402
+import app.models  # noqa: E402, F401 — force model registration
 
 target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    """Get database URL from environment, with Railway postgres:// fix."""
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL environment variable is not set. "
-            "Cannot run Alembic migrations without a database connection."
-        )
+    """Get database URL from settings, with Railway postgres:// fix."""
+    settings = get_settings()
+    url = settings.database_url
     # Railway uses postgres:// but SQLAlchemy needs postgresql://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)

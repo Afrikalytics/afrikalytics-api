@@ -3,14 +3,18 @@ Schemas Pydantic pour les utilisateurs.
 Extrait de main.py — schemas: UserCreate, PasswordChange, EnterpriseUserAdd.
 UserResponse et TokenResponse sont dans app/schemas/auth.py (partages).
 """
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
+
+PlanType = Literal["basic", "professionnel", "entreprise"]
 
 
 class UserCreate(BaseModel):
     """Schema pour creation via Zapier (apres paiement WooCommerce)."""
     email: EmailStr = Field(..., max_length=254)
     name: str = Field(..., max_length=100)
-    plan: str = Field(..., max_length=50)
+    plan: PlanType
     order_id: str = Field(..., max_length=100)
 
 

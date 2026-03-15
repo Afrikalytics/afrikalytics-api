@@ -158,7 +158,7 @@ class TestPaydunyaWebhook:
         assert data["status"] == "success"
 
         # Verifier que le plan de l'utilisateur a ete mis a jour
-        from models import User
+        from app.models import User
         db.expire_all()
         updated_user = db.query(User).filter(User.id == test_user.id).first()
         assert updated_user.plan == "professionnel"

@@ -112,7 +112,7 @@ class TestListContacts:
         self, client, db, admin_auth_headers
     ):
         # Creer un contact en DB d'abord
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="Contact Test",
@@ -132,7 +132,7 @@ class TestListContacts:
     def test_list_contacts_response_contains_expected_fields(
         self, client, db, admin_auth_headers
     ):
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="Champs Test",
@@ -183,7 +183,7 @@ class TestMarkContactAsRead:
     def test_super_admin_can_mark_contact_as_read(
         self, client, db, admin_auth_headers
     ):
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="A Lire",
@@ -223,7 +223,7 @@ class TestMarkContactAsRead:
     def test_regular_user_cannot_mark_contact_as_read_returns_403(
         self, client, db, auth_headers
     ):
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="Test",
@@ -248,7 +248,7 @@ class TestDeleteContact:
     def test_super_admin_can_delete_contact(
         self, client, db, admin_auth_headers
     ):
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="A Supprimer",
@@ -273,7 +273,7 @@ class TestDeleteContact:
         self, client, db, admin_auth_headers
     ):
         """Apres suppression, le contact ne doit plus apparaitre dans la liste."""
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="Verifie Suppression",
@@ -307,7 +307,7 @@ class TestDeleteContact:
     def test_regular_user_cannot_delete_contact_returns_403(
         self, client, db, auth_headers
     ):
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="Test Delete",
@@ -326,7 +326,7 @@ class TestDeleteContact:
         assert response.status_code == 403
 
     def test_delete_contact_without_token_returns_401(self, client, db):
-        from models import Contact
+        from app.models import Contact
 
         contact = Contact(
             name="Test No Auth",

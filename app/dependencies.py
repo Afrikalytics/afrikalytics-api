@@ -3,6 +3,7 @@ Dependencies FastAPI partagees entre les routers.
 Extrait de main.py pour eviter les imports circulaires.
 """
 from fastapi import Depends, HTTPException, Header
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -33,7 +34,7 @@ def get_current_user(
         # Token expired — clear 401 with descriptive message
         raise HTTPException(
             status_code=401,
-            detail="Token expir\u00e9. Veuillez vous reconnecter ou utiliser le refresh token."
+            detail="Token expiré. Veuillez vous reconnecter ou utiliser le refresh token."
         )
 
     if not payload:
@@ -42,7 +43,9 @@ def get_current_user(
     # Check if token has been revoked (blacklisted)
     jti = payload.get("jti")
     if jti:
-        blacklisted = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+        blacklisted = db.execute(
+            select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+        ).scalar_one_or_none()
         if blacklisted:
             raise HTTPException(status_code=401, detail="Token has been revoked")
 
@@ -50,12 +53,14 @@ def get_current_user(
     if payload.get("token_type") == "refresh":
         raise HTTPException(status_code=401, detail="Token invalide. Utilisez un access token.")
 
-    user = db.query(User).filter(User.email == payload.get("sub")).first()
+    user = db.execute(
+        select(User).where(User.email == payload.get("sub"))
+    ).scalar_one_or_none()
 
     if not user:
-        raise HTTPException(status_code=401, detail="Utilisateur non trouv\u00e9")
+        raise HTTPException(status_code=401, detail="Utilisateur non trouvé")
 
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Compte d\u00e9sactiv\u00e9")
+        raise HTTPException(status_code=403, detail="Compte désactivé")
 
     return user

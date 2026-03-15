@@ -1,33 +1,36 @@
 import hashlib
 import json
 import logging
-import os
 import re
 import secrets
-from datetime import datetime, timedelta
-from html import escape as html_escape
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-logger = logging.getLogger(__name__)
-
+from app.config import get_settings
 from database import get_db
 from models import User, Subscription, TokenBlacklist
 from auth import hash_password
 from app.dependencies import get_current_user
 from app.services.email import send_email
+from app.services.email_templates import payment_upgrade_email, payment_new_user_email
 from app.schemas.payments import PaymentCreate
+
+logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 VALID_PLANS = {"basic", "professionnel", "entreprise"}
 
 router = APIRouter()
 
 # PayDunya configuration
-PAYDUNYA_MASTER_KEY = os.getenv("PAYDUNYA_MASTER_KEY", "")
-PAYDUNYA_PRIVATE_KEY = os.getenv("PAYDUNYA_PRIVATE_KEY", "")
-PAYDUNYA_TOKEN = os.getenv("PAYDUNYA_TOKEN", "")
-PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")
+PAYDUNYA_MASTER_KEY = settings.paydunya_master_key
+PAYDUNYA_PRIVATE_KEY = settings.paydunya_private_key
+PAYDUNYA_TOKEN = settings.paydunya_token
+PAYDUNYA_MODE = settings.paydunya_mode
 
 
 @router.post("/api/paydunya/create-invoice")
@@ -77,7 +80,7 @@ async def create_paydunya_invoice(
         "actions": {
             "cancel_url": "https://afrikalytics.com/premium?status=cancelled",
             "return_url": "https://dashboard.afrikalytics.com/payment-success",
-            "callback_url": os.getenv("API_URL", "https://web-production-ef657.up.railway.app") + "/api/paydunya/webhook"
+            "callback_url": settings.api_url + "/api/paydunya/webhook"
         }
     }
 
@@ -163,7 +166,9 @@ async def paydunya_webhook(
             raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
         # Idempotency: reject already-processed webhooks (DB-backed, survives restarts)
-        existing_blacklist = db.query(TokenBlacklist).filter(TokenBlacklist.jti == f"webhook_{invoice_token}").first()
+        existing_blacklist = db.execute(
+            select(TokenBlacklist).where(TokenBlacklist.jti == f"webhook_{invoice_token}")
+        ).scalar_one_or_none()
         if existing_blacklist:
             logger.info(f"PayDunya webhook already processed for token {invoice_token[:8]}... - ignoring")
             return {"status": "already_processed", "reason": "This webhook has already been processed"}
@@ -204,7 +209,7 @@ async def paydunya_webhook(
         if isinstance(custom_data, str):
             try:
                 custom_data = json.loads(custom_data)
-            except:
+            except (json.JSONDecodeError, ValueError):
                 custom_data = {}
 
         email = custom_data.get("email")
@@ -222,30 +227,34 @@ async def paydunya_webhook(
             logger.warning("Missing email in custom_data")
             return {"status": "error", "reason": "Email manquant"}
 
-        existing_user = db.query(User).filter(User.email == email).first()
+        existing_user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
 
         if existing_user:
             existing_user.plan = plan
             existing_user.is_active = True
             db.commit()
 
-            existing_subscription = db.query(Subscription).filter(
-                Subscription.user_id == existing_user.id,
-                Subscription.status == "active"
-            ).first()
+            existing_subscription = db.execute(
+                select(Subscription).where(
+                    Subscription.user_id == existing_user.id,
+                    Subscription.status == "active"
+                )
+            ).scalar_one_or_none()
 
             if existing_subscription:
                 existing_subscription.plan = plan
-                existing_subscription.start_date = datetime.utcnow()
-                existing_subscription.end_date = datetime.utcnow() + timedelta(days=30)
+                existing_subscription.start_date = datetime.now(timezone.utc)
+                existing_subscription.end_date = datetime.now(timezone.utc) + timedelta(days=30)
                 existing_subscription.status = "active"
             else:
                 new_subscription = Subscription(
                     user_id=existing_user.id,
                     plan=plan,
                     status="active",
-                    start_date=datetime.utcnow(),
-                    end_date=datetime.utcnow() + timedelta(days=30)
+                    start_date=datetime.now(timezone.utc),
+                    end_date=datetime.now(timezone.utc) + timedelta(days=30)
                 )
                 db.add(new_subscription)
 
@@ -254,30 +263,14 @@ async def paydunya_webhook(
             send_email(
                 to=email,
                 subject="Bienvenue dans Afrikalytics Premium !",
-                html=f"""
-                    <h2>Félicitations {html_escape(existing_user.full_name)} !</h2>
-                    <p>Votre abonnement <strong>{html_escape(plan.capitalize())}</strong> est maintenant actif.</p>
-                    <hr>
-                    <p>Vous avez maintenant accès à :</p>
-                    <ul>
-                        <li>Résultats en temps réel</li>
-                        <li>Insights complets</li>
-                        <li>Rapports PDF détaillés</li>
-                        <li>Dashboard avancé</li>
-                        <li>Support prioritaire</li>
-                    </ul>
-                    <hr>
-                    <p><a href="https://dashboard.afrikalytics.com">Accéder à mon dashboard Premium</a></p>
-                    <hr>
-                    <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-                """
+                html=payment_upgrade_email(existing_user.full_name, plan),
             )
 
             # Mark this webhook as processed (idempotency — DB-backed)
             webhook_blacklist = TokenBlacklist(
                 jti=f"webhook_{invoice_token}",
-                user_id=existing_user.id if existing_user else new_user.id,
-                expires_at=datetime.utcnow() + timedelta(days=90),
+                user_id=existing_user.id,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=90),
             )
             db.add(webhook_blacklist)
             db.commit()
@@ -304,8 +297,8 @@ async def paydunya_webhook(
                 user_id=new_user.id,
                 plan=plan,
                 status="active",
-                start_date=datetime.utcnow(),
-                end_date=datetime.utcnow() + timedelta(days=30)
+                start_date=datetime.now(timezone.utc),
+                end_date=datetime.now(timezone.utc) + timedelta(days=30)
             )
             db.add(new_subscription)
             db.commit()
@@ -313,35 +306,14 @@ async def paydunya_webhook(
             send_email(
                 to=email,
                 subject="Bienvenue dans Afrikalytics Premium !",
-                html=f"""
-                    <h2>Bienvenue {html_escape(name or '')} !</h2>
-                    <p>Votre compte Afrikalytics <strong>{html_escape(plan.capitalize())}</strong> a été créé avec succès.</p>
-                    <hr>
-                    <h3>Vos identifiants de connexion :</h3>
-                    <p><strong>Email :</strong> {html_escape(email)}</p>
-                    <p><strong>Mot de passe temporaire :</strong> {html_escape(temp_password)}</p>
-                    <p style="color: #e74c3c;"><em>Pensez à changer votre mot de passe après votre première connexion.</em></p>
-                    <hr>
-                    <p>Vous avez maintenant accès à :</p>
-                    <ul>
-                        <li>Résultats en temps réel</li>
-                        <li>Insights complets</li>
-                        <li>Rapports PDF détaillés</li>
-                        <li>Dashboard avancé</li>
-                        <li>Support prioritaire</li>
-                    </ul>
-                    <hr>
-                    <p><a href="https://dashboard.afrikalytics.com/login">Se connecter à mon dashboard</a></p>
-                    <hr>
-                    <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-                """
+                html=payment_new_user_email(name, email, temp_password, plan),
             )
 
             # Mark this webhook as processed (idempotency — DB-backed)
             webhook_blacklist = TokenBlacklist(
                 jti=f"webhook_{invoice_token}",
-                user_id=existing_user.id if existing_user else new_user.id,
-                expires_at=datetime.utcnow() + timedelta(days=90),
+                user_id=new_user.id,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=90),
             )
             db.add(webhook_blacklist)
             db.commit()
@@ -355,7 +327,10 @@ async def paydunya_webhook(
 
 
 @router.get("/api/paydunya/verify/{token}")
-async def verify_payment(token: str):
+async def verify_payment(
+    token: str,
+    current_user: User = Depends(get_current_user),
+):
     import requests
 
     if PAYDUNYA_MODE == "live":

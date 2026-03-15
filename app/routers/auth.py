@@ -11,11 +11,11 @@ Endpoints:
     POST /api/auth/reset-password  — Reset password avec token
     POST /api/auth/logout         — Deconnexion (blacklist le token)
 """
-import html
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from sqlalchemy import select, delete, update
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -40,6 +40,13 @@ from app.schemas.auth import (
     VerifyCodeRequest,
 )
 from app.services.email import send_email
+from app.services.email_templates import (
+    welcome_email,
+    verification_code_email,
+    resend_verification_code_email,
+    forgot_password_email,
+    password_reset_confirmation_email,
+)
 from app.rate_limit import limiter
 from app.utils import validate_password
 
@@ -56,7 +63,9 @@ async def register(request: Request, data: UserRegister, db: Session = Depends(g
     Limite a 3 tentatives par minute.
     """
     # Verifier si l'email existe deja
-    existing_user = db.query(User).filter(User.email == data.email).first()
+    existing_user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
     if existing_user:
         raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
 
@@ -84,30 +93,13 @@ async def register(request: Request, data: UserRegister, db: Session = Depends(g
     token_data = {"sub": new_user.email, "user_id": new_user.id}
     access_token = create_access_token(data=token_data)
     refresh_token = create_refresh_token(data=token_data)
-    expires_at = (datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
 
     # Envoyer email de bienvenue
     send_email(
         to=new_user.email,
         subject="Bienvenue sur Afrikalytics AI !",
-        html=f"""
-            <h2>Bienvenue {html.escape(new_user.full_name)} !</h2>
-            <p>Votre compte Afrikalytics a été créé avec succès.</p>
-            <p><strong>Plan :</strong> Basic (Gratuit)</p>
-            <hr>
-            <p>Avec votre compte Basic, vous pouvez :</p>
-            <ul>
-                <li>✅ Participer à toutes nos études</li>
-                <li>✅ Voir un aperçu des insights</li>
-                <li>✅ Accéder au dashboard basic</li>
-            </ul>
-            <p>Pour accéder aux résultats complets, insights détaillés et rapports PDF, passez à <strong>Premium</strong> !</p>
-            <hr>
-            <p><a href="https://dashboard.afrikalytics.com">Accéder à mon dashboard →</a></p>
-            <p><a href="https://afrikalytics.com/premium">Découvrir les offres Premium →</a></p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=welcome_email(new_user.full_name),
     )
 
     return {
@@ -129,7 +121,9 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
     Envoie un code de verification par email.
     Limite a 5 tentatives par minute.
     """
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
 
     if not user or not verify_password(data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
@@ -139,10 +133,12 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
 
     # Verifier si l'abonnement est expire (backup du cron job)
     if user.plan in ["professionnel", "entreprise"]:
-        active_subscription = db.query(Subscription).filter(
-            Subscription.user_id == user.id,
-            Subscription.status == "active"
-        ).first()
+        active_subscription = db.execute(
+            select(Subscription).where(
+                Subscription.user_id == user.id,
+                Subscription.status == "active"
+            )
+        ).scalar_one_or_none()
 
         if active_subscription and active_subscription.end_date:
             end_date = (
@@ -150,7 +146,7 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
                 if hasattr(active_subscription.end_date, 'date')
                 else active_subscription.end_date
             )
-            if end_date < datetime.utcnow().date():
+            if end_date < datetime.now(timezone.utc).date():
                 # Abonnement expire — retrograder
                 active_subscription.status = "expired"
                 user.plan = "basic"
@@ -160,16 +156,18 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
     code = str(secrets.randbelow(900000) + 100000)
 
     # Supprimer les anciens codes non utilises de cet utilisateur
-    db.query(VerificationCode).filter(
-        VerificationCode.user_id == user.id,
-        VerificationCode.is_used == False
-    ).delete()
+    db.execute(
+        delete(VerificationCode).where(
+            VerificationCode.user_id == user.id,
+            VerificationCode.is_used.is_(False)
+        )
+    )
 
     # Creer le nouveau code (expire dans 10 minutes)
     verification = VerificationCode(
         user_id=user.id,
         code=code,
-        expires_at=datetime.utcnow() + timedelta(minutes=10)
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
     db.add(verification)
     db.commit()
@@ -178,18 +176,7 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
     send_email(
         to=user.email,
         subject="🔐 Votre code de connexion Afrikalytics",
-        html=f"""
-            <h2>Code de vérification</h2>
-            <p>Bonjour {html.escape(user.full_name)},</p>
-            <p>Voici votre code de connexion :</p>
-            <div style="background-color: #f3f4f6; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
-                <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1f2937;">{code}</span>
-            </div>
-            <p style="color: #666; font-size: 14px;">Ce code expire dans <strong>10 minutes</strong>.</p>
-            <p style="color: #e74c3c; font-size: 14px;">Si vous n'avez pas demandé ce code, ignorez cet email.</p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=verification_code_email(user.full_name, code),
     )
 
     return {
@@ -209,24 +196,33 @@ async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = D
     Connexion utilisateur — Etape 2 : Verification du code 2FA.
     Retourne le token JWT si le code est correct.
     """
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=401, detail="Code invalide")
 
     # Brute-force protection: count recently used (failed) codes for this user
-    recent_failed = db.query(VerificationCode).filter(
-        VerificationCode.user_id == user.id,
-        VerificationCode.is_used == True,
-        VerificationCode.created_at > datetime.utcnow() - timedelta(minutes=10)
-    ).count()
+    from sqlalchemy import func
+    recent_failed = db.execute(
+        select(func.count()).select_from(VerificationCode).where(
+            VerificationCode.user_id == user.id,
+            VerificationCode.is_used.is_(True),
+            VerificationCode.created_at > datetime.now(timezone.utc) - timedelta(minutes=10)
+        )
+    ).scalar()
 
     if recent_failed >= 5:
         # Invalidate all remaining active codes
-        db.query(VerificationCode).filter(
-            VerificationCode.user_id == user.id,
-            VerificationCode.is_used == False,
-        ).update({"is_used": True})
+        db.execute(
+            update(VerificationCode)
+            .where(
+                VerificationCode.user_id == user.id,
+                VerificationCode.is_used.is_(False),
+            )
+            .values(is_used=True)
+        )
         db.commit()
         raise HTTPException(
             status_code=429,
@@ -234,19 +230,21 @@ async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = D
         )
 
     # Chercher le code valide
-    verification = db.query(VerificationCode).filter(
-        VerificationCode.user_id == user.id,
-        VerificationCode.code == data.code,
-        VerificationCode.is_used == False,
-        VerificationCode.expires_at > datetime.utcnow()
-    ).first()
+    verification = db.execute(
+        select(VerificationCode).where(
+            VerificationCode.user_id == user.id,
+            VerificationCode.code == data.code,
+            VerificationCode.is_used.is_(False),
+            VerificationCode.expires_at > datetime.now(timezone.utc)
+        )
+    ).scalar_one_or_none()
 
     if not verification:
         # Mark a failed attempt by creating a used verification code entry
         failed_entry = VerificationCode(
             user_id=user.id,
             code="000000",
-            expires_at=datetime.utcnow(),
+            expires_at=datetime.now(timezone.utc),
             is_used=True,
         )
         db.add(failed_entry)
@@ -261,7 +259,7 @@ async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = D
     token_data = {"sub": user.email, "user_id": user.id}
     access_token = create_access_token(data=token_data)
     refresh_token = create_refresh_token(data=token_data)
-    expires_at = (datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
 
     return {
         "access_token": access_token,
@@ -280,7 +278,9 @@ async def resend_code(request: Request, data: ForgotPassword, db: Session = Depe
     """
     Renvoyer un nouveau code de verification 2FA.
     """
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
 
     if not user:
         # Ne pas reveler si l'email existe
@@ -290,16 +290,18 @@ async def resend_code(request: Request, data: ForgotPassword, db: Session = Depe
     code = str(secrets.randbelow(900000) + 100000)
 
     # Supprimer les anciens codes
-    db.query(VerificationCode).filter(
-        VerificationCode.user_id == user.id,
-        VerificationCode.is_used == False
-    ).delete()
+    db.execute(
+        delete(VerificationCode).where(
+            VerificationCode.user_id == user.id,
+            VerificationCode.is_used.is_(False)
+        )
+    )
 
     # Creer le nouveau code
     verification = VerificationCode(
         user_id=user.id,
         code=code,
-        expires_at=datetime.utcnow() + timedelta(minutes=10)
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)
     )
     db.add(verification)
     db.commit()
@@ -308,17 +310,7 @@ async def resend_code(request: Request, data: ForgotPassword, db: Session = Depe
     send_email(
         to=user.email,
         subject="🔐 Nouveau code de connexion Afrikalytics",
-        html=f"""
-            <h2>Nouveau code de vérification</h2>
-            <p>Bonjour {html.escape(user.full_name)},</p>
-            <p>Voici votre nouveau code de connexion :</p>
-            <div style="background-color: #f3f4f6; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
-                <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1f2937;">{code}</span>
-            </div>
-            <p style="color: #666; font-size: 14px;">Ce code expire dans <strong>10 minutes</strong>.</p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=resend_verification_code_email(user.full_name, code),
     )
 
     return {"message": "Un nouveau code a été envoyé"}
@@ -333,7 +325,9 @@ async def forgot_password(request: Request, data: ForgotPassword, db: Session = 
     Envoyer un email de reinitialisation de mot de passe.
     Limite a 3 tentatives par minute.
     """
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
 
     # Ne pas reveler si l'email existe ou non (securite)
     if not user:
@@ -352,22 +346,7 @@ async def forgot_password(request: Request, data: ForgotPassword, db: Session = 
     send_email(
         to=user.email,
         subject="Réinitialisation de votre mot de passe - Afrikalytics",
-        html=f"""
-            <h2>Réinitialisation de mot de passe</h2>
-            <p>Bonjour {html.escape(user.full_name)},</p>
-            <p>Vous avez demandé à réinitialiser votre mot de passe Afrikalytics.</p>
-            <p>Cliquez sur le bouton ci-dessous pour définir un nouveau mot de passe :</p>
-            <p style="margin: 30px 0;">
-                <a href="{reset_url}"
-                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Réinitialiser mon mot de passe
-                </a>
-            </p>
-            <p style="color: #666; font-size: 14px;">Ce lien expire dans <strong>1 heure</strong>.</p>
-            <p style="color: #666; font-size: 14px;">Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.</p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=forgot_password_email(user.full_name, reset_url),
     )
 
     return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé"}
@@ -386,10 +365,10 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
     try:
         payload = decode_access_token(data.token)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Lien expir\u00e9. Veuillez refaire la demande.")
+        raise HTTPException(status_code=400, detail="Lien expiré. Veuillez refaire la demande.")
 
     if not payload:
-        raise HTTPException(status_code=400, detail="Lien invalide ou expir\u00e9")
+        raise HTTPException(status_code=400, detail="Lien invalide ou expiré")
 
     # Verifier que c'est bien un token de reset
     if payload.get("type") != "reset":
@@ -398,7 +377,9 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
     # Verifier que le token n'a pas deja ete utilise
     reset_jti = payload.get("jti")
     if reset_jti:
-        already_used = db.query(TokenBlacklist).filter(TokenBlacklist.jti == reset_jti).first()
+        already_used = db.execute(
+            select(TokenBlacklist).where(TokenBlacklist.jti == reset_jti)
+        ).scalar_one_or_none()
         if already_used:
             raise HTTPException(status_code=400, detail="Ce lien a déjà été utilisé")
 
@@ -407,7 +388,9 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
         raise HTTPException(status_code=400, detail="Lien invalide")
 
     # Trouver l'utilisateur
-    user = db.query(User).filter(User.email == email).first()
+    user = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=400, detail="Utilisateur non trouvé")
 
@@ -435,21 +418,7 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
     send_email(
         to=user.email,
         subject="Mot de passe modifié - Afrikalytics",
-        html=f"""
-            <h2>Mot de passe modifié</h2>
-            <p>Bonjour {html.escape(user.full_name)},</p>
-            <p>Votre mot de passe Afrikalytics a été réinitialisé avec succès.</p>
-            <p>Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.</p>
-            <p style="margin: 30px 0;">
-                <a href="https://dashboard.afrikalytics.com/login"
-                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Se connecter
-                </a>
-            </p>
-            <p style="color: #e74c3c; font-size: 14px;">Si vous n'êtes pas à l'origine de cette modification, contactez-nous immédiatement.</p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """
+        html=password_reset_confirmation_email(user.full_name),
     )
 
     return {"message": "Mot de passe réinitialisé avec succès"}
@@ -471,7 +440,7 @@ async def refresh_access_token(
     try:
         payload = decode_access_token(data.refresh_token)
     except ValueError:
-        raise HTTPException(status_code=401, detail="Refresh token expir\u00e9. Veuillez vous reconnecter.")
+        raise HTTPException(status_code=401, detail="Refresh token expiré. Veuillez vous reconnecter.")
 
     if not payload:
         raise HTTPException(status_code=401, detail="Refresh token invalide")
@@ -485,17 +454,19 @@ async def refresh_access_token(
         raise HTTPException(status_code=401, detail="Refresh token invalide")
 
     # Verify user still exists and is active
-    user = db.query(User).filter(User.email == email).first()
+    user = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=401, detail="Utilisateur non trouv\u00e9")
+        raise HTTPException(status_code=401, detail="Utilisateur non trouvé")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Compte d\u00e9sactiv\u00e9")
+        raise HTTPException(status_code=403, detail="Compte désactivé")
 
     # Issue new access token
     new_access_token = create_access_token(
         data={"sub": user.email, "user_id": user.id}
     )
-    expires_at = (datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
 
     return {
         "access_token": new_access_token,
@@ -528,7 +499,9 @@ async def logout(
     jti = payload.get("jti")
     if jti:
         # Verify token is not already blacklisted
-        existing = db.query(TokenBlacklist).filter(TokenBlacklist.jti == jti).first()
+        existing = db.execute(
+            select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+        ).scalar_one_or_none()
         if not existing:
             blacklisted = TokenBlacklist(
                 jti=jti,

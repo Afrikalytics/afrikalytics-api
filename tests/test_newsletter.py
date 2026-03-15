@@ -58,7 +58,7 @@ class TestNewsletterSubscribe:
 
     def test_reactivate_unsubscribed_email(self, client, db):
         """Un email desabonne peut se reabonner."""
-        from models import NewsletterSubscriber
+        from app.models import NewsletterSubscriber
 
         # Creer un abonne desabonne directement en DB
         subscriber = NewsletterSubscriber(
@@ -104,7 +104,7 @@ class TestNewsletterConfirm:
 
     def test_valid_token_confirms_subscription(self, client, db):
         """Un token valide doit confirmer l'abonnement."""
-        from models import NewsletterSubscriber
+        from app.models import NewsletterSubscriber
 
         token = secrets.token_urlsafe(32)
         subscriber = NewsletterSubscriber(
@@ -140,8 +140,8 @@ class TestNewsletterConfirm:
 
     def test_already_confirmed_token_returns_message(self, client, db):
         """Un token deja utilise doit retourner un message sans erreur."""
-        from models import NewsletterSubscriber
-        from datetime import datetime
+        from app.models import NewsletterSubscriber
+        from datetime import datetime, timezone
 
         token = secrets.token_urlsafe(32)
         subscriber = NewsletterSubscriber(
@@ -149,7 +149,7 @@ class TestNewsletterConfirm:
             source="test",
             status="active",
             is_confirmed=True,
-            confirmed_at=datetime.utcnow(),
+            confirmed_at=datetime.now(timezone.utc),
             confirmation_token=token,
             unsubscribe_token=secrets.token_urlsafe(32),
         )
@@ -168,7 +168,7 @@ class TestNewsletterUnsubscribe:
 
     def test_valid_token_unsubscribes_subscriber(self, client, db):
         """Un token de desabonnement valide doit desabonner l'utilisateur."""
-        from models import NewsletterSubscriber
+        from app.models import NewsletterSubscriber
 
         unsubscribe_token = secrets.token_urlsafe(32)
         subscriber = NewsletterSubscriber(
@@ -204,7 +204,7 @@ class TestNewsletterUnsubscribe:
 
     def test_already_unsubscribed_returns_message(self, client, db):
         """Un token d'un abonne deja desabonne doit retourner un message sans erreur."""
-        from models import NewsletterSubscriber
+        from app.models import NewsletterSubscriber
 
         unsubscribe_token = secrets.token_urlsafe(32)
         subscriber = NewsletterSubscriber(
@@ -231,7 +231,7 @@ class TestNewsletterSubscribers:
         self, client, db, admin_auth_headers
     ):
         # Creer un abonne pour avoir des resultats
-        from models import NewsletterSubscriber
+        from app.models import NewsletterSubscriber
 
         subscriber = NewsletterSubscriber(
             email="abonne_list@example.com",
@@ -256,7 +256,7 @@ class TestNewsletterSubscribers:
     def test_subscribers_response_contains_expected_fields(
         self, client, db, admin_auth_headers
     ):
-        from models import NewsletterSubscriber
+        from app.models import NewsletterSubscriber
 
         subscriber = NewsletterSubscriber(
             email="abonne_fields@example.com",

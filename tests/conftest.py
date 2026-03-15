@@ -21,10 +21,10 @@ from sqlalchemy.orm import sessionmaker
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci")
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 
-from database import Base, get_db
+from app.database import Base, get_db
 from main import app
-from auth import hash_password, create_access_token
-from models import User, Study, Insight, Report, BlogPost
+from app.auth import hash_password, create_access_token
+from app.models import User, Study, Insight, Report, BlogPost
 
 # ---------------------------------------------------------------------------
 # Test database (SQLite in-memory)

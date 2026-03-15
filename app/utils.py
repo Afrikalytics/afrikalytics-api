@@ -3,7 +3,6 @@ Utility functions and constants for the Afrikalytics API.
 Extracted from models.py to keep models clean.
 """
 
-import json
 import re
 import secrets
 import unicodedata
@@ -63,19 +62,20 @@ def ensure_unique_slug(db, slug: str, post_id: int | None = None) -> str:
     Ensure the slug is unique in blog_posts.
     If it already exists, append a numeric suffix.
     """
-    from models import BlogPost
+    from sqlalchemy import select
+    from app.models import BlogPost
 
     original_slug = slug
     counter = 1
 
     while True:
-        query = db.query(BlogPost).filter(BlogPost.slug == slug)
+        stmt = select(BlogPost).where(BlogPost.slug == slug)
 
         # Exclude current post when editing
         if post_id:
-            query = query.filter(BlogPost.id != post_id)
+            stmt = stmt.where(BlogPost.id != post_id)
 
-        existing = query.first()
+        existing = db.execute(stmt).scalar_one_or_none()
 
         if not existing:
             return slug
@@ -97,7 +97,7 @@ def calculate_days_remaining(end_date) -> int | None:
     Returns None if end_date is None, 0 if already expired.
     Handles both datetime and date objects.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     if end_date is None:
         return None
@@ -107,7 +107,7 @@ def calculate_days_remaining(end_date) -> int | None:
     else:
         end = end_date
 
-    days = (end - datetime.utcnow().date()).days
+    days = (end - datetime.now(timezone.utc).date()).days
     return max(0, days)
 
 

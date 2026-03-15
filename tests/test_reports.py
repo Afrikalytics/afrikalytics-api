@@ -123,7 +123,7 @@ class TestGetReportById:
         self, client, study, db, auth_headers
     ):
         """Un utilisateur basic ne peut pas acceder a un rapport de type 'premium'."""
-        from models import Report
+        from app.models import Report
         premium_report = Report(
             study_id=study.id,
             title="Rapport Premium",
@@ -150,7 +150,7 @@ class TestGetReportById:
         self, client, study, db, enterprise_auth_headers
     ):
         """Un utilisateur entreprise peut acceder aux rapports premium."""
-        from models import Report
+        from app.models import Report
         premium_report = Report(
             study_id=study.id,
             title="Rapport Premium Entreprise",
@@ -352,7 +352,7 @@ class TestDownloadReport:
     def test_authenticated_user_can_track_download(
         self, client, report, auth_headers
     ):
-        initial_count = report.download_count
+        _initial_count = report.download_count
         response = client.post(
             f"/api/reports/{report.id}/download",
             headers=auth_headers,
@@ -378,7 +378,7 @@ class TestDownloadReport:
         )
 
         # Verifier que le compteur a ete incremente dans la DB
-        from models import Report
+        from app.models import Report
         db.expire_all()
         updated_report = db.query(Report).filter(Report.id == report.id).first()
         assert updated_report.download_count >= 2

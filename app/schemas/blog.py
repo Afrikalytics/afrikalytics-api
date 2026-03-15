@@ -1,7 +1,6 @@
 """
 Schemas Pydantic pour le module Blog.
 """
-import json
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field, validator
@@ -30,11 +29,8 @@ class BlogPostCreate(BaseModel):
 
     @validator('tags', pre=True)
     def validate_tags(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
+        if isinstance(v, list):
+            return v
         return v if v else []
 
 
@@ -88,11 +84,8 @@ class BlogPostResponse(BaseModel):
 
     @validator('tags', pre=True)
     def parse_tags(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
+        if isinstance(v, list):
+            return v
         return v if v else []
 
 
@@ -119,11 +112,8 @@ class BlogPostPublic(BaseModel):
 
     @validator('tags', pre=True)
     def parse_tags(cls, v):
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except:
-                return []
+        if isinstance(v, list):
+            return v
         return v if v else []
 
 

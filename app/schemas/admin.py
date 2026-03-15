@@ -1,16 +1,19 @@
 """
 Schemas Pydantic pour l'administration des utilisateurs.
 """
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
+
+from pydantic import BaseModel, EmailStr
+
+PlanType = Literal["basic", "professionnel", "entreprise"]
 
 
 class AdminUserCreate(BaseModel):
     email: EmailStr
     full_name: str
     password: Optional[str] = None
-    plan: str = "basic"
+    plan: PlanType = "basic"
     is_active: bool = True
     is_admin: bool = False
     admin_role: Optional[str] = None
@@ -20,7 +23,7 @@ class AdminUserCreate(BaseModel):
 class AdminUserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
-    plan: Optional[str] = None
+    plan: Optional[PlanType] = None
     is_active: Optional[bool] = None
     is_admin: Optional[bool] = None
     admin_role: Optional[str] = None

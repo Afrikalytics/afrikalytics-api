@@ -2,12 +2,15 @@
 Router pour la gestion administrative des utilisateurs.
 7 endpoints couvrant les roles, le CRUD utilisateurs et le toggle d'activation.
 """
-import html
+import logging
 import secrets
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from database import get_db
 from models import User, Subscription, AuditLog
@@ -15,6 +18,7 @@ from auth import hash_password
 from app.dependencies import get_current_user
 from app.permissions import check_admin_permission, ADMIN_ROLES
 from app.services.email import send_email
+from app.services.email_templates import admin_user_created_email
 from app.services.audit import log_action
 from app.schemas.admin import AdminUserCreate, AdminUserUpdate, AdminUserResponse
 from app.schemas.audit import AuditLogResponse, AuditLogListResponse
@@ -62,7 +66,9 @@ async def get_all_users(
             detail="Vous n'avez pas la permission de gérer les utilisateurs",
         )
 
-    users = db.query(User).order_by(User.created_at.desc()).offset(skip).limit(limit).all()
+    users = db.execute(
+        select(User).order_by(User.created_at.desc()).offset(skip).limit(limit)
+    ).scalars().all()
     return users
 
 
@@ -81,7 +87,9 @@ async def get_user_by_id(
             detail="Vous n'avez pas la permission de gérer les utilisateurs",
         )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.execute(
+        select(User).where(User.id == user_id)
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
@@ -106,7 +114,9 @@ async def create_user_admin(
         )
 
     # Vérifier si l'email existe déjà
-    existing_user = db.query(User).filter(User.email == data.email).first()
+    existing_user = db.execute(
+        select(User).where(User.email == data.email)
+    ).scalar_one_or_none()
     if existing_user:
         raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
 
@@ -139,23 +149,7 @@ async def create_user_admin(
     send_email(
         to=new_user.email,
         subject="Bienvenue sur Afrikalytics AI",
-        html=f"""
-            <h2>Bienvenue sur Afrikalytics AI !</h2>
-            <p>Bonjour {html.escape(new_user.full_name)},</p>
-            <p>Votre compte a été créé avec succès.</p>
-            <p><strong>Email :</strong> {html.escape(new_user.email)}</p>
-            <p><strong>Mot de passe :</strong> {html.escape(password)}</p>
-            <p><strong>Plan :</strong> {html.escape(new_user.plan.capitalize())}</p>
-            <p style="margin: 30px 0;">
-                <a href="https://dashboard.afrikalytics.com/login"
-                   style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                    Se connecter
-                </a>
-            </p>
-            <p style="color: #666;">Nous vous recommandons de changer votre mot de passe après votre première connexion.</p>
-            <hr>
-            <p><em>L'équipe Afrikalytics AI by Marketym</em></p>
-        """,
+        html=admin_user_created_email(new_user.full_name, new_user.email, password, new_user.plan),
     )
 
     # Audit log
@@ -165,8 +159,8 @@ async def create_user_admin(
             resource_id=new_user.id, details={"email": new_user.email, "plan": new_user.plan},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     return new_user
 
@@ -189,14 +183,18 @@ async def update_user_admin(
             detail="Vous n'avez pas la permission de gérer les utilisateurs",
         )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.execute(
+        select(User).where(User.id == user_id)
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
     # Mettre à jour les champs fournis
     if data.email is not None:
         # Vérifier si l'email est déjà utilisé par un autre utilisateur
-        existing = db.query(User).filter(User.email == data.email, User.id != user_id).first()
+        existing = db.execute(
+            select(User).where(User.email == data.email, User.id != user_id)
+        ).scalar_one_or_none()
         if existing:
             raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
         user.email = data.email
@@ -238,8 +236,8 @@ async def update_user_admin(
             resource_id=user_id, details={"updated_fields": list(data.dict(exclude_unset=True).keys())},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     return user
 
@@ -267,7 +265,9 @@ async def delete_user_admin(
             status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte"
         )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.execute(
+        select(User).where(User.id == user_id)
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
@@ -279,11 +279,13 @@ async def delete_user_admin(
             resource_id=user_id, details={"deleted_email": deleted_email},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     # Supprimer les subscriptions associées
-    db.query(Subscription).filter(Subscription.user_id == user_id).delete()
+    db.execute(
+        delete(Subscription).where(Subscription.user_id == user_id)
+    )
 
     # Supprimer l'utilisateur
     db.delete(user)
@@ -305,7 +307,9 @@ async def toggle_user_active(
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.execute(
+        select(User).where(User.id == user_id)
+    ).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
@@ -319,8 +323,8 @@ async def toggle_user_active(
             resource_id=user_id, details={"new_is_active": user.is_active},
             request=request,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Audit log failed: {e}")
 
     status = "activé" if user.is_active else "désactivé"
     return {"message": f"Utilisateur {status}", "is_active": user.is_active}
@@ -345,22 +349,27 @@ async def get_audit_logs(
             detail="Seuls les super admins et admins utilisateurs peuvent consulter les logs d'audit",
         )
 
-    query = db.query(AuditLog).join(User, AuditLog.user_id == User.id)
+    stmt = select(AuditLog).join(User, AuditLog.user_id == User.id)
 
     if action:
-        query = query.filter(AuditLog.action == action)
+        stmt = stmt.where(AuditLog.action == action)
     if resource_type:
-        query = query.filter(AuditLog.resource_type == resource_type)
+        stmt = stmt.where(AuditLog.resource_type == resource_type)
 
-    total = query.count()
+    # Count total matching records
+    count_stmt = select(func.count()).select_from(AuditLog).join(User, AuditLog.user_id == User.id)
+    if action:
+        count_stmt = count_stmt.where(AuditLog.action == action)
+    if resource_type:
+        count_stmt = count_stmt.where(AuditLog.resource_type == resource_type)
+    total = db.execute(count_stmt).scalar()
 
-    logs = (
-        query
+    logs = db.execute(
+        stmt
         .order_by(AuditLog.created_at.desc())
         .offset(skip)
         .limit(limit)
-        .all()
-    )
+    ).scalars().all()
 
     items = []
     for log in logs:
