@@ -3,14 +3,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-from typing import List
-
 logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.middleware.tenant import get_tenant_db
 from app.models import Report, Study, User
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission, check_content_access
 from app.schemas.reports import ReportCreate, ReportUpdate, ReportResponse
 from app.services.audit import log_action
@@ -19,15 +18,20 @@ from app.rate_limit import limiter
 router = APIRouter()
 
 
-@router.get("/api/reports", response_model=List[ReportResponse])
+@router.get("/api/reports")
 @limiter.limit("30/minute")
-async def get_all_reports(request: Request, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
-    reports = db.execute(
+async def get_all_reports(
+    request: Request,
+    pagination: PaginationParams = Depends(),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    stmt = (
         select(Report)
         .where(Report.is_available.is_(True))
         .order_by(Report.created_at.desc())
-    ).scalars().all()
-    return reports
+    )
+    return paginate(db, stmt, pagination)
 
 
 @router.get("/api/reports/study/{study_id}", response_model=ReportResponse)

@@ -1,7 +1,7 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from app.database import get_db
 from app.middleware.tenant import get_tenant_db
 from app.models import Insight, User
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission
 from app.schemas.insights import InsightCreate, InsightUpdate
 from app.services.audit import log_action
@@ -38,18 +39,14 @@ def convert_insight_images(insight):
 @limiter.limit("30/minute")
 def get_all_insights(
     request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    pagination: PaginationParams = Depends(),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    insights = db.execute(
-        select(Insight)
-        .where(Insight.is_published.is_(True))
-        .offset(skip)
-        .limit(limit)
-    ).scalars().all()
-    return [convert_insight_images(insight) for insight in insights]
+    stmt = select(Insight).where(Insight.is_published.is_(True))
+    result = paginate(db, stmt, pagination)
+    result["items"] = [convert_insight_images(i) for i in result["items"]]
+    return result
 
 
 @router.get("/api/insights/study/{study_id}")

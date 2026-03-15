@@ -1,13 +1,14 @@
 import hashlib
 import hmac
+import httpx
 import json
 import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -18,7 +19,13 @@ from auth import hash_password
 from app.dependencies import get_current_user
 from app.services.email import send_email
 from app.services.email_templates import payment_upgrade_email, payment_new_user_email
-from app.schemas.payments import PaymentCreate
+from app.schemas.payments import (
+    PaymentCreate,
+    PaymentHistoryItem,
+    PaymentHistoryResponse,
+    CurrentPlanResponse,
+    PlanFeatures,
+)
 from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
@@ -32,6 +39,36 @@ PLAN_PRICES = {
     "entreprise": 500000,
 }
 
+PLAN_FEATURES: dict[str, dict] = {
+    "basic": {
+        "max_studies": 3,
+        "max_team_members": 1,
+        "export_pdf": False,
+        "api_access": False,
+        "custom_branding": False,
+        "price_monthly": 0,
+        "price_label": "Gratuit",
+    },
+    "professionnel": {
+        "max_studies": 20,
+        "max_team_members": 5,
+        "export_pdf": True,
+        "api_access": True,
+        "custom_branding": False,
+        "price_monthly": 15000,
+        "price_label": "15 000 FCFA/mois",
+    },
+    "entreprise": {
+        "max_studies": -1,  # illimite
+        "max_team_members": -1,
+        "export_pdf": True,
+        "api_access": True,
+        "custom_branding": True,
+        "price_monthly": 50000,
+        "price_label": "50 000 FCFA/mois",
+    },
+}
+
 router = APIRouter()
 
 # PayDunya configuration
@@ -39,6 +76,205 @@ PAYDUNYA_MASTER_KEY = settings.paydunya_master_key
 PAYDUNYA_PRIVATE_KEY = settings.paydunya_private_key
 PAYDUNYA_TOKEN = settings.paydunya_token
 PAYDUNYA_MODE = settings.paydunya_mode
+
+
+@router.get("/api/payments/history", response_model=PaymentHistoryResponse)
+@limiter.limit("30/minute")
+async def get_payment_history(
+    request: Request,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recuperer l'historique des paiements de l'utilisateur."""
+    # Count total payments for this user
+    total = db.execute(
+        select(func.count(Payment.id)).where(Payment.user_id == current_user.id)
+    ).scalar_one()
+
+    # Fetch paginated payments ordered by most recent first
+    payments = db.execute(
+        select(Payment)
+        .where(Payment.user_id == current_user.id)
+        .order_by(Payment.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    ).scalars().all()
+
+    items = [
+        PaymentHistoryItem(
+            id=p.id,
+            amount=p.amount,
+            currency=p.currency or "XOF",
+            status=p.status,
+            plan=p.plan,
+            payment_method=p.payment_method or "mobile_money",
+            created_at=p.created_at,
+            reference=p.provider_ref,
+        )
+        for p in payments
+    ]
+
+    current_page = (skip // limit) + 1 if limit > 0 else 1
+
+    return PaymentHistoryResponse(
+        payments=items,
+        total=total,
+        current_page=current_page,
+    )
+
+
+@router.get("/api/payments/current-plan", response_model=CurrentPlanResponse)
+@limiter.limit("30/minute")
+async def get_current_plan(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recuperer le plan actuel et les details d'abonnement."""
+    # Fetch the latest active subscription
+    active_subscription = db.execute(
+        select(Subscription)
+        .where(
+            Subscription.user_id == current_user.id,
+            Subscription.status == "active",
+        )
+        .order_by(Subscription.created_at.desc())
+    ).scalar_one_or_none()
+
+    expires_at = active_subscription.end_date if active_subscription else None
+    features = PLAN_FEATURES.get(current_user.plan, PLAN_FEATURES["basic"])
+
+    return CurrentPlanResponse(
+        plan=current_user.plan,
+        is_active=current_user.is_active,
+        expires_at=expires_at,
+        features=features,
+    )
+
+
+@router.post("/api/payments/change-plan")
+@limiter.limit("10/minute")
+async def change_plan(
+    request: Request,
+    data: PaymentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Initier un changement de plan (upgrade/downgrade) via PayDunya."""
+    target_plan = data.plan
+
+    if target_plan not in VALID_PLANS:
+        raise HTTPException(status_code=400, detail=f"Plan invalide: {target_plan}")
+
+    if target_plan == current_user.plan:
+        raise HTTPException(status_code=400, detail="Vous etes deja sur ce plan.")
+
+    # Downgrade to basic — immediate, no payment needed
+    if target_plan == "basic":
+        current_user.plan = "basic"
+        db.commit()
+
+        # Cancel active subscription
+        active_sub = db.execute(
+            select(Subscription).where(
+                Subscription.user_id == current_user.id,
+                Subscription.status == "active",
+            )
+        ).scalar_one_or_none()
+        if active_sub:
+            active_sub.status = "cancelled"
+            db.commit()
+
+        return {
+            "success": True,
+            "action": "downgraded",
+            "plan": "basic",
+            "message": "Votre plan a ete mis a jour vers Basic.",
+        }
+
+    # Upgrade — create PayDunya invoice
+    amount = PLAN_PRICES.get(target_plan, 295000)
+
+    if PAYDUNYA_MODE == "live":
+        base_url = "https://app.paydunya.com/api/v1"
+    else:
+        base_url = "https://app.paydunya.com/sandbox-api/v1"
+
+    invoice_data = {
+        "invoice": {
+            "items": {
+                "item_0": {
+                    "name": f"Changement vers {target_plan.capitalize()} - Afrikalytics",
+                    "quantity": 1,
+                    "unit_price": amount,
+                    "total_price": amount,
+                    "description": f"Passage au plan {target_plan.capitalize()}",
+                }
+            },
+            "total_amount": amount,
+            "description": f"Afrikalytics - Passage au plan {target_plan.capitalize()}",
+        },
+        "store": {
+            "name": "Afrikalytics AI",
+            "tagline": "Intelligence d'Affaires pour l'Afrique",
+            "postal_address": "Dakar, Senegal",
+            "website_url": "https://afrikalytics.com",
+        },
+        "custom_data": {
+            "email": current_user.email,
+            "name": current_user.full_name,
+            "plan": target_plan,
+        },
+        "actions": {
+            "cancel_url": "https://afrikalytics.com/premium?status=cancelled",
+            "return_url": "https://dashboard.afrikalytics.com/payment-success",
+            "callback_url": settings.api_url + "/api/paydunya/webhook",
+        },
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "PAYDUNYA-MASTER-KEY": PAYDUNYA_MASTER_KEY,
+        "PAYDUNYA-PRIVATE-KEY": PAYDUNYA_PRIVATE_KEY,
+        "PAYDUNYA-TOKEN": PAYDUNYA_TOKEN,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{base_url}/checkout-invoice/create",
+                json=invoice_data,
+                headers=headers,
+            )
+        result = response.json()
+
+        if result.get("response_code") == "00":
+            return {
+                "success": True,
+                "action": "payment_required",
+                "payment_url": result.get("response_text"),
+                "token": result.get("token"),
+                "target_plan": target_plan,
+            }
+        else:
+            logger.error(f"PayDunya plan change invoice failed: response_code={result.get('response_code')}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Erreur creation facture: {result.get('response_text', 'Erreur inconnue')}",
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=500, detail="Erreur de connexion au service de paiement")
+
+
+@router.get("/api/payments/plans")
+@limiter.limit("60/minute")
+async def get_available_plans(request: Request):
+    """Recuperer la liste des plans disponibles avec leurs features."""
+    return {
+        "plans": PLAN_FEATURES,
+    }
 
 
 @router.post("/api/paydunya/create-invoice")
@@ -49,8 +285,6 @@ async def create_paydunya_invoice(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    import requests
-
     if PAYDUNYA_MODE == "live":
         base_url = "https://app.paydunya.com/api/v1"
     else:
@@ -98,11 +332,12 @@ async def create_paydunya_invoice(
     }
 
     try:
-        response = requests.post(
-            f"{base_url}/checkout-invoice/create",
-            json=invoice_data,
-            headers=headers
-        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{base_url}/checkout-invoice/create",
+                json=invoice_data,
+                headers=headers,
+            )
         result = response.json()
 
         if result.get("response_code") == "00":
@@ -117,7 +352,7 @@ async def create_paydunya_invoice(
                 status_code=400,
                 detail=f"Erreur création facture: {result.get('response_text', 'Erreur inconnue')}"
             )
-    except __import__('requests').RequestException:
+    except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Erreur de connexion au service de paiement")
 
 
@@ -198,7 +433,6 @@ async def paydunya_webhook(
         token = data.get("token") or data.get("invoice_token")
 
         if token and not status:
-            import requests as req
             if PAYDUNYA_MODE == "live":
                 verify_url = f"https://app.paydunya.com/api/v1/checkout-invoice/confirm/{token}"
             else:
@@ -211,13 +445,14 @@ async def paydunya_webhook(
             }
 
             try:
-                verify_response = req.get(verify_url, headers=verify_headers)
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    verify_response = await client.get(verify_url, headers=verify_headers)
                 verify_data = verify_response.json()
                 logger.info("PayDunya verification completed")
                 status = verify_data.get("status")
                 if not data.get("custom_data"):
                     data["custom_data"] = verify_data.get("custom_data", {})
-            except Exception:
+            except httpx.HTTPError:
                 logger.exception("PayDunya verification error")
 
         if status != "completed":
@@ -391,8 +626,6 @@ async def verify_payment(
     token: str,
     current_user: User = Depends(get_current_user),
 ):
-    import requests
-
     if PAYDUNYA_MODE == "live":
         base_url = "https://app.paydunya.com/api/v1"
     else:
@@ -406,10 +639,11 @@ async def verify_payment(
     }
 
     try:
-        response = requests.get(
-            f"{base_url}/checkout-invoice/confirm/{token}",
-            headers=headers
-        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{base_url}/checkout-invoice/confirm/{token}",
+                headers=headers,
+            )
         return response.json()
-    except requests.RequestException:
+    except httpx.HTTPError:
         raise HTTPException(status_code=500, detail="Erreur de connexion au service de paiement")

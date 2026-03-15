@@ -1,13 +1,13 @@
 import html
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from typing import List
 
 from app.database import get_db
 from app.models import Contact, User
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.schemas.contacts import ContactCreate, ContactResponse
 from app.services.email import send_email, CONTACT_EMAIL
 from app.services.email_templates import contact_form_email
@@ -42,24 +42,22 @@ async def create_contact(
     return new_contact
 
 
-@router.get("/api/contacts", response_model=List[ContactResponse])
+@router.get("/api/contacts")
 async def get_all_contacts(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
     include_deleted: bool = False,
+    pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Liste des contacts (admin uniquement). Supporte la pagination via skip/limit."""
+    """Liste des contacts (admin uniquement). Supporte la pagination via page/per_page."""
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
 
     stmt = select(Contact)
     if not include_deleted:
         stmt = stmt.where(Contact.deleted_at.is_(None))
-    stmt = stmt.order_by(Contact.created_at.desc()).offset(skip).limit(limit)
-    contacts = db.execute(stmt).scalars().all()
-    return contacts
+    stmt = stmt.order_by(Contact.created_at.desc())
+    return paginate(db, stmt, pagination)
 
 
 @router.put("/api/contacts/{contact_id}/read")

@@ -30,7 +30,7 @@ router = APIRouter()
 
 @router.post("/api/blog/posts", response_model=BlogPostResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_blog_post(
+def create_blog_post(
     data: BlogPostCreate,
     request: Request,
     db: Session = Depends(get_db),
@@ -89,7 +89,7 @@ async def create_blog_post(
 
 @router.get("/api/blog/posts", response_model=BlogPostListResponse)
 @limiter.limit("20/minute")
-async def get_all_blog_posts(
+def get_all_blog_posts(
     request: Request,
     page: int = 1,
     per_page: int = 10,
@@ -136,7 +136,7 @@ async def get_all_blog_posts(
 
 @router.get("/api/blog/posts/{post_id}", response_model=BlogPostResponse)
 @limiter.limit("20/minute")
-async def get_blog_post(
+def get_blog_post(
     request: Request,
     post_id: int,
     db: Session = Depends(get_db),
@@ -157,7 +157,7 @@ async def get_blog_post(
 
 @router.put("/api/blog/posts/{post_id}", response_model=BlogPostResponse)
 @limiter.limit("10/minute")
-async def update_blog_post(
+def update_blog_post(
     post_id: int,
     data: BlogPostUpdate,
     request: Request,
@@ -209,7 +209,7 @@ async def update_blog_post(
 
 @router.delete("/api/blog/posts/{post_id}")
 @limiter.limit("5/minute")
-async def delete_blog_post(
+def delete_blog_post(
     post_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -246,7 +246,7 @@ async def delete_blog_post(
 
 @router.post("/api/blog/posts/{post_id}/publish", response_model=BlogPostResponse)
 @limiter.limit("10/minute")
-async def publish_blog_post(
+def publish_blog_post(
     post_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -287,7 +287,7 @@ async def publish_blog_post(
 
 @router.get("/api/blog/public/posts", response_model=BlogPostPublicListResponse)
 @limiter.limit("30/minute")
-async def get_public_blog_posts(
+def get_public_blog_posts(
     request: Request,
     page: int = 1,
     per_page: int = 10,
@@ -329,7 +329,7 @@ async def get_public_blog_posts(
 
 @router.get("/api/blog/public/posts/{slug}", response_model=BlogPostPublic)
 @limiter.limit("30/minute")
-async def get_public_blog_post_by_slug(
+def get_public_blog_post_by_slug(
     request: Request,
     slug: str,
     db: Session = Depends(get_db),
@@ -351,6 +351,7 @@ async def get_public_blog_post_by_slug(
         raise HTTPException(status_code=404, detail="Article non trouvé")
 
     post.increment_views(db)
+    db.commit()
 
     response = BlogPostPublic.from_orm(post)
     response.author_name = post.author.full_name
@@ -360,7 +361,7 @@ async def get_public_blog_post_by_slug(
 
 @router.get("/api/blog/public/categories", response_model=List[CategoryResponse])
 @limiter.limit("30/minute")
-async def get_blog_categories(request: Request, db: Session = Depends(get_db)):
+def get_blog_categories(request: Request, db: Session = Depends(get_db)):
     # Check cache
     cached = cache_get("blog:categories")
     if cached:
@@ -386,7 +387,7 @@ async def get_blog_categories(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/api/blog/public/search", response_model=SearchResponse)
 @limiter.limit("30/minute")
-async def search_blog_posts(
+def search_blog_posts(
     request: Request,
     q: str,
     page: int = 1,
@@ -422,7 +423,7 @@ async def search_blog_posts(
 
 @router.get("/api/blog/public/popular", response_model=List[PopularPostResponse])
 @limiter.limit("30/minute")
-async def get_popular_posts(
+def get_popular_posts(
     request: Request,
     limit: int = 5,
     db: Session = Depends(get_db),
@@ -446,7 +447,7 @@ async def get_popular_posts(
 
 @router.get("/api/blog/public/related/{post_id}", response_model=List[BlogPostPublic])
 @limiter.limit("30/minute")
-async def get_related_posts(
+def get_related_posts(
     request: Request,
     post_id: int,
     limit: int = 3,

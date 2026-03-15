@@ -3,7 +3,7 @@ Schemas Pydantic pour l'authentification.
 Extrait de main.py — schemas: UserRegister, UserLogin, UserResponse, TokenResponse,
 ForgotPassword, ResetPassword, VerifyCodeRequest, LoginPendingResponse.
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
@@ -33,8 +33,7 @@ class UserResponse(BaseModel):
     parent_user_id: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TokenResponse(BaseModel):
@@ -81,3 +80,31 @@ class LoginPendingResponse(BaseModel):
     message: str
     email: str
     requires_verification: bool
+
+
+class SSOAuthURL(BaseModel):
+    """Schema de reponse avec l'URL d'autorisation SSO."""
+    auth_url: str
+    provider: str
+
+
+class SSOCallbackRequest(BaseModel):
+    """Schema pour le callback SSO."""
+    code: str
+    state: str | None = None
+
+
+class SSOExchangeRequest(BaseModel):
+    """
+    Schema pour l'echange du code SSO contre un JWT.
+    Le frontend envoie le code recu dans le parametre sso_code de la redirection.
+    """
+    sso_code: str = Field(..., min_length=43, max_length=64)
+
+
+class SSOExchangeResponse(BaseModel):
+    """Schema de reponse apres echange SSO reussi — equivalent a TokenResponse sans refresh token."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: str
+    user: UserResponse

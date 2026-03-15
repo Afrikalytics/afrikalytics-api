@@ -9,10 +9,12 @@ from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import get_settings
 from app.rate_limit import limiter
 from app.routers.admin import router as admin_router
+from app.routers.analytics import router as analytics_router
 from app.routers.auth import router as auth_router
 from app.routers.blog import router as blog_router
 from app.routers.contacts import router as contacts_router
@@ -22,11 +24,14 @@ from app.routers.newsletter import router as newsletter_router
 from app.routers.payments import router as payments_router
 from app.routers.reports import router as reports_router
 from app.routers.studies import router as studies_router
+from app.routers.integrations import router as integrations_router
+from app.routers.notifications import router as notifications_router
 from app.routers.users import router as users_router
 from app.database import engine  # noqa: F401 — kept for potential direct usage
 from app.models import Base  # noqa: F401 — kept so models are registered
 
 settings = get_settings()
+is_prod = settings.environment == "production"
 
 # Initialize Sentry
 if settings.sentry_dsn:
@@ -55,6 +60,11 @@ app = FastAPI(
         "Legacy `/api/` paths redirect to `/api/v1/` with HTTP 307."
     ),
     version="1.0.0",
+    # Disable interactive docs in production to avoid exposing the full attack surface.
+    # Set ENVIRONMENT=development in .env to re-enable during local development.
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json",
 )
 
 # Rate limiter
@@ -182,6 +192,14 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
+# --- Proxy Headers Middleware (SEC-05) ---
+# Must be registered LAST so it runs FIRST in the middleware chain (Starlette reverse order).
+# Rewrites request.client.host to the real client IP from X-Forwarded-For before any
+# other middleware (CORS, CSRF, rate limiting) inspects the request.
+# trusted_hosts="*" is safe here because the custom get_real_client_ip() in rate_limit.py
+# performs its own trusted-proxy validation based on RFC 1918 ranges.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
 # Enregistrer les routers
 app.include_router(auth_router)
 app.include_router(users_router)
@@ -194,19 +212,25 @@ app.include_router(contacts_router)
 app.include_router(blog_router)
 app.include_router(newsletter_router)
 app.include_router(payments_router)
+app.include_router(notifications_router)
+app.include_router(integrations_router)
+app.include_router(analytics_router)
 
 
 # Routes racine
 @app.get("/")
 def read_root():
-    return {
+    payload: dict = {
         "message": "Bienvenue sur l'API Afrikalytics AI",
         "version": "1.0.0",
         "api_version": "v1",
         "status": "online",
-        "docs": "/docs",
-        "endpoints": "/api/v1/"
+        "endpoints": "/api/v1/",
     }
+    # Only expose the docs URL outside production to avoid leaking the attack surface.
+    if not is_prod:
+        payload["docs"] = "/docs"
+    return payload
 
 
 @app.get("/health")

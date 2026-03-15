@@ -3,7 +3,7 @@ Schemas Pydantic pour le module Newsletter.
 """
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class NewsletterSubscribe(BaseModel):
@@ -20,8 +20,7 @@ class NewsletterSubscriberResponse(BaseModel):
     subscribed_at: datetime
     confirmed_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NewsletterCampaignCreate(BaseModel):
@@ -45,5 +44,4 @@ class NewsletterCampaignResponse(BaseModel):
     clicked_count: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

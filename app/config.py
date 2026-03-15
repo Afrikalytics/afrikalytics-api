@@ -65,6 +65,15 @@ class Settings(BaseSettings):
         description="Redis connection URL",
     )
 
+    # --- SSO Google ---
+    google_client_id: str = Field(default="", description="Google OAuth2 Client ID")
+    google_client_secret: str = Field(default="", description="Google OAuth2 Client Secret")
+
+    # --- SSO Microsoft ---
+    microsoft_client_id: str = Field(default="", description="Microsoft OAuth2 Client ID")
+    microsoft_client_secret: str = Field(default="", description="Microsoft OAuth2 Client Secret")
+    microsoft_tenant_id: str = Field(default="common", description="Microsoft tenant ID")
+
     # --- Integrations ---
     zapier_secret: str = Field(default="")
     cron_secret: str = Field(default="")

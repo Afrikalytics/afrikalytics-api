@@ -5,15 +5,16 @@ Router pour les études de marché (CRUD + import CSV/Excel).
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 from app.database import get_db
-from app.models import User, Study
+from app.models import User, Study, StudyDataset
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission
 from app.schemas.studies import StudyCreate, StudyUpdate, StudyResponse
 from app.schemas.imports import ImportResponse, ImportValidationResult, ImportPreviewResponse
@@ -29,23 +30,20 @@ from app.rate_limit import limiter
 router = APIRouter()
 
 
-@router.get("/api/studies", response_model=List[StudyResponse])
+@router.get("/api/studies")
 @limiter.limit("30/minute")
 async def get_all_studies(
     request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Récupérer toutes les études, triées par date de création décroissante.
-    Supporte la pagination via skip/limit.
+    Supporte la pagination via page/per_page.
     """
-    studies = db.execute(
-        select(Study).order_by(Study.created_at.desc()).offset(skip).limit(limit)
-    ).scalars().all()
-    return studies
+    stmt = select(Study).order_by(Study.created_at.desc())
+    return paginate(db, stmt, pagination)
 
 
 @router.get("/api/studies/active", response_model=List[StudyResponse])
@@ -295,7 +293,7 @@ async def import_study_data(
 ):
     """
     Importer des données CSV/Excel pour créer une nouvelle étude.
-    Les données sont stockées en JSONB dans le champ imported_data de l'étude.
+    Les données sont stockées dans la table study_datasets (séparée de studies).
     """
     if not check_admin_permission(current_user, "studies"):
         raise HTTPException(
@@ -322,16 +320,20 @@ async def import_study_data(
             detail="Aucune donnée importée. Le fichier est vide ou invalide.",
         )
 
+    # Create study metadata (without the heavy dataset payload)
     new_study = Study(
         title=title,
         description=description if description else None,
         category=category,
         status="Ouvert",
         is_active=True,
-        imported_data=result.data,
-        imported_columns=result.columns,
-        imported_row_count=result.imported_rows,
-        import_source=file.filename,
+    )
+    # Attach dataset in a separate table via relationship
+    new_study.dataset = StudyDataset(
+        data=result.data,
+        columns=result.columns,
+        row_count=result.imported_rows,
+        source_filename=file.filename,
     )
 
     db.add(new_study)
