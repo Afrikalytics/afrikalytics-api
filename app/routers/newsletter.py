@@ -47,7 +47,7 @@ router = APIRouter()
 
 @router.post("/api/newsletter/subscribe", status_code=201)
 @limiter.limit("10/minute")
-async def newsletter_subscribe(
+def newsletter_subscribe(
     request: Request,
     data: NewsletterSubscribe,
     db: Session = Depends(get_db),
@@ -125,7 +125,7 @@ async def newsletter_subscribe(
 
 @router.get("/api/newsletter/confirm/{token}")
 @limiter.limit("20/minute")
-async def newsletter_confirm(
+def newsletter_confirm(
     request: Request,
     token: str,
     db: Session = Depends(get_db),
@@ -174,7 +174,7 @@ async def newsletter_confirm(
 
 @router.get("/api/newsletter/unsubscribe/{token}")
 @limiter.limit("20/minute")
-async def newsletter_unsubscribe(
+def newsletter_unsubscribe(
     request: Request,
     token: str,
     db: Session = Depends(get_db),
@@ -221,7 +221,7 @@ async def newsletter_unsubscribe(
 
 @router.get("/api/newsletter/subscribers")
 @limiter.limit("20/minute")
-async def get_newsletter_subscribers(
+def get_newsletter_subscribers(
     request: Request,
     status: Optional[str] = "active",
     db: Session = Depends(get_db),

@@ -46,7 +46,7 @@ def _get_study_with_data(study_id: int, db: Session, current_user: User) -> Stud
 
 @router.post("/api/studies/{study_id}/analyze", response_model=AnalysisResponse)
 @limiter.limit("10/minute")
-async def analyze_study(
+def analyze_study(
     study_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -82,7 +82,7 @@ async def analyze_study(
 
 @router.get("/api/studies/{study_id}/anomalies", response_model=AnomaliesResponse)
 @limiter.limit("10/minute")
-async def detect_study_anomalies(
+def detect_study_anomalies(
     study_id: int,
     request: Request,
     db: Session = Depends(get_db),

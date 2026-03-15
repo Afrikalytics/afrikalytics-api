@@ -24,7 +24,7 @@ router = APIRouter(tags=["notifications"])
 
 @router.get("/api/notifications")
 @limiter.limit("30/minute")
-async def list_notifications(
+def list_notifications(
     request: Request,
     pagination: PaginationParams = Depends(),
     status: str = Query("all", pattern="^(all|read|unread)$"),
@@ -58,7 +58,7 @@ async def list_notifications(
 
 @router.get("/api/notifications/unread-count", response_model=UnreadCountResponse)
 @limiter.limit("30/minute")
-async def get_unread_count(
+def get_unread_count(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -76,7 +76,7 @@ async def get_unread_count(
 
 @router.put("/api/notifications/{notification_id}/read")
 @limiter.limit("20/minute")
-async def mark_notification_as_read(
+def mark_notification_as_read(
     request: Request,
     notification_id: int,
     db: Session = Depends(get_db),
@@ -103,7 +103,7 @@ async def mark_notification_as_read(
 
 @router.put("/api/notifications/read-all")
 @limiter.limit("20/minute")
-async def mark_all_notifications_as_read(
+def mark_all_notifications_as_read(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -128,7 +128,7 @@ async def mark_all_notifications_as_read(
 
 @router.delete("/api/notifications/{notification_id}")
 @limiter.limit("10/minute")
-async def delete_notification(
+def delete_notification(
     request: Request,
     notification_id: int,
     db: Session = Depends(get_db),

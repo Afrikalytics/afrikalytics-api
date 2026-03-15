@@ -30,7 +30,7 @@ router = APIRouter()
 
 @router.get("/api/admin/roles")
 @limiter.limit("20/minute")
-async def get_admin_roles(
+def get_admin_roles(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
@@ -55,7 +55,7 @@ async def get_admin_roles(
 
 @router.get("/api/admin/users")
 @limiter.limit("20/minute")
-async def get_all_users(
+def get_all_users(
     request: Request,
     pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
@@ -77,7 +77,7 @@ async def get_all_users(
 
 @router.get("/api/admin/users/{user_id}", response_model=AdminUserResponse)
 @limiter.limit("20/minute")
-async def get_user_by_id(
+def get_user_by_id(
     request: Request,
     user_id: int,
     db: Session = Depends(get_db),
@@ -103,7 +103,7 @@ async def get_user_by_id(
 
 @router.post("/api/admin/users", response_model=AdminUserResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_user_admin(
+def create_user_admin(
     data: AdminUserCreate,
     request: Request,
     db: Session = Depends(get_db),
@@ -173,7 +173,7 @@ async def create_user_admin(
 
 @router.put("/api/admin/users/{user_id}", response_model=AdminUserResponse)
 @limiter.limit("10/minute")
-async def update_user_admin(
+def update_user_admin(
     user_id: int,
     data: AdminUserUpdate,
     request: Request,
@@ -251,7 +251,7 @@ async def update_user_admin(
 
 @router.delete("/api/admin/users/{user_id}")
 @limiter.limit("5/minute")
-async def delete_user_admin(
+def delete_user_admin(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -304,7 +304,7 @@ async def delete_user_admin(
 
 @router.put("/api/admin/users/{user_id}/toggle-active")
 @limiter.limit("10/minute")
-async def toggle_user_active(
+def toggle_user_active(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -341,7 +341,7 @@ async def toggle_user_active(
 
 @router.get("/api/admin/audit-log")
 @limiter.limit("20/minute")
-async def get_audit_logs(
+def get_audit_logs(
     request: Request,
     pagination: PaginationParams = Depends(),
     action: Optional[str] = None,
@@ -394,7 +394,7 @@ async def get_audit_logs(
 
 @router.post("/api/admin/cleanup")
 @limiter.limit("5/minute")
-async def run_cleanup(
+def run_cleanup(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -441,7 +441,7 @@ async def run_cleanup(
 
 @router.post("/api/admin/cleanup/cron", include_in_schema=False)
 @limiter.limit("10/minute")
-async def run_cleanup_cron(
+def run_cleanup_cron(
     request: Request,
     db: Session = Depends(get_db),
 ):

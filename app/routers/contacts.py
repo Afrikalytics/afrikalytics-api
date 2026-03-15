@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.post("/api/contacts", response_model=ContactResponse, status_code=201)
 @limiter.limit("3/minute")
-async def create_contact(
+def create_contact(
     request: Request,
     data: ContactCreate,
     db: Session = Depends(get_db),
@@ -43,7 +43,7 @@ async def create_contact(
 
 
 @router.get("/api/contacts")
-async def get_all_contacts(
+def get_all_contacts(
     include_deleted: bool = False,
     pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
@@ -61,7 +61,7 @@ async def get_all_contacts(
 
 
 @router.put("/api/contacts/{contact_id}/read")
-async def mark_contact_as_read(
+def mark_contact_as_read(
     contact_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -83,7 +83,7 @@ async def mark_contact_as_read(
 
 
 @router.delete("/api/contacts/{contact_id}")
-async def delete_contact(
+def delete_contact(
     contact_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

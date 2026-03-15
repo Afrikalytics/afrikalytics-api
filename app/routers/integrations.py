@@ -122,7 +122,7 @@ def _validate_api_key(
 
 @router.post("/api/integrations/keys", response_model=ApiKeyCreatedResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_api_key(
+def create_api_key(
     request: Request,
     payload: ApiKeyCreate,
     db: Session = Depends(get_db),
@@ -217,7 +217,7 @@ async def create_api_key(
 
 @router.get("/api/integrations/keys", response_model=ApiKeyListResponse)
 @limiter.limit("30/minute")
-async def list_api_keys(
+def list_api_keys(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -252,7 +252,7 @@ async def list_api_keys(
 
 @router.delete("/api/integrations/keys/{key_id}", status_code=200)
 @limiter.limit("10/minute")
-async def revoke_api_key(
+def revoke_api_key(
     request: Request,
     key_id: int,
     db: Session = Depends(get_db),
@@ -307,7 +307,7 @@ async def revoke_api_key(
 
 @router.get("/api/integrations/embed/{study_id}", response_model=EmbedDataResponse)
 @limiter.limit("60/minute")
-async def get_embed_data(
+def get_embed_data(
     request: Request,
     study_id: int,
     x_api_key: Optional[str] = Header(None, alias="X-Api-Key"),
@@ -342,7 +342,7 @@ async def get_embed_data(
 
 @router.get("/api/integrations/embed/{study_id}/widget/{widget_type}")
 @limiter.limit("60/minute")
-async def get_embed_widget(
+def get_embed_widget(
     request: Request,
     study_id: int,
     widget_type: str,

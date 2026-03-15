@@ -32,7 +32,7 @@ router = APIRouter()
 
 @router.get("/api/studies")
 @limiter.limit("30/minute")
-async def get_all_studies(
+def get_all_studies(
     request: Request,
     pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
@@ -48,7 +48,7 @@ async def get_all_studies(
 
 @router.get("/api/studies/active", response_model=List[StudyResponse])
 @limiter.limit("30/minute")
-async def get_active_studies(request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_active_studies(request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Récupérer les études actives (is_active=True) pour le site public.
     """
@@ -70,7 +70,7 @@ async def get_active_studies(request: Request, db: Session = Depends(get_db), cu
 
 @router.get("/api/studies/{study_id}", response_model=StudyResponse)
 @limiter.limit("30/minute")
-async def get_study(request: Request, study_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_study(request: Request, study_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Récupérer une étude par son ID.
     """
@@ -84,7 +84,7 @@ async def get_study(request: Request, study_id: int, db: Session = Depends(get_d
 
 @router.post("/api/studies", response_model=StudyResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_study(
+def create_study(
     data: StudyCreate,
     request: Request,
     db: Session = Depends(get_db),
@@ -138,7 +138,7 @@ async def create_study(
 
 @router.put("/api/studies/{study_id}", response_model=StudyResponse)
 @limiter.limit("10/minute")
-async def update_study(
+def update_study(
     study_id: int,
     data: StudyUpdate,
     request: Request,
@@ -187,7 +187,7 @@ async def update_study(
 
 @router.delete("/api/studies/{study_id}")
 @limiter.limit("5/minute")
-async def delete_study(
+def delete_study(
     study_id: int,
     request: Request,
     db: Session = Depends(get_db),
