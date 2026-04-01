@@ -6,9 +6,9 @@ from fastapi import Depends, HTTPException, Header
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import User, TokenBlacklist
-from auth import decode_access_token
+from app.database import get_db
+from app.models import User, TokenBlacklist
+from app.auth import decode_access_token
 
 
 def get_current_user(
@@ -49,8 +49,10 @@ def get_current_user(
         if blacklisted:
             raise HTTPException(status_code=401, detail="Token has been revoked")
 
-    # Reject refresh tokens used as access tokens
+    # Reject refresh tokens and reset tokens used as access tokens
     if payload.get("token_type") == "refresh":
+        raise HTTPException(status_code=401, detail="Token invalide. Utilisez un access token.")
+    if payload.get("type") == "reset":
         raise HTTPException(status_code=401, detail="Token invalide. Utilisez un access token.")
 
     user = db.execute(

@@ -14,7 +14,7 @@ MAX_ROWS = 100_000
 MAX_COLUMNS = 200
 
 
-class ImportError(Exception):
+class FileImportError(Exception):
     """Erreur lors de l'import."""
 
     def __init__(self, message: str, errors: list[dict] | None = None):
@@ -51,14 +51,14 @@ async def validate_file(filename: str, file_size: int) -> None:
     # Verifier extension
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise ImportError(
+        raise FileImportError(
             f"Extension '{ext}' non supportee. Extensions acceptees : {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
     # Verifier taille
     if file_size > MAX_FILE_SIZE:
         max_mb = MAX_FILE_SIZE // (1024 * 1024)
-        raise ImportError(
+        raise FileImportError(
             f"Fichier trop volumineux ({file_size // (1024 * 1024)} MB). Taille maximale : {max_mb} MB"
         )
 
@@ -89,7 +89,7 @@ async def parse_csv(content: bytes, encoding: str = "utf-8") -> ImportResult:
         try:
             text = content.decode("latin-1")
         except UnicodeDecodeError:
-            raise ImportError("Impossible de decoder le fichier. Encodages supportes : UTF-8, Latin-1")
+            raise FileImportError("Impossible de decoder le fichier. Encodages supportes : UTF-8, Latin-1")
 
     # Supprimer BOM si present
     if text.startswith("\ufeff"):
@@ -102,10 +102,10 @@ async def parse_csv(content: bytes, encoding: str = "utf-8") -> ImportResult:
     result.columns = reader.fieldnames or []
 
     if not result.columns:
-        raise ImportError("Aucune colonne detectee dans le fichier CSV")
+        raise FileImportError("Aucune colonne detectee dans le fichier CSV")
 
     if len(result.columns) > MAX_COLUMNS:
-        raise ImportError(
+        raise FileImportError(
             f"Trop de colonnes ({len(result.columns)}). Maximum autorise : {MAX_COLUMNS}"
         )
 
@@ -134,7 +134,7 @@ async def parse_excel(content: bytes) -> ImportResult:
     try:
         import openpyxl
     except ModuleNotFoundError:
-        raise ImportError(
+        raise FileImportError(
             "Le module openpyxl n'est pas installe. Import Excel indisponible."
         )
 
@@ -145,11 +145,11 @@ async def parse_excel(content: bytes) -> ImportResult:
         ws = wb.active
 
         if ws is None:
-            raise ImportError("Fichier Excel vide ou aucune feuille active trouvee")
+            raise FileImportError("Fichier Excel vide ou aucune feuille active trouvee")
 
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
-            raise ImportError("Fichier Excel vide")
+            raise FileImportError("Fichier Excel vide")
 
         # Extraire les en-tetes depuis la premiere ligne
         headers = [
@@ -159,7 +159,7 @@ async def parse_excel(content: bytes) -> ImportResult:
         result.columns = headers
 
         if len(headers) > MAX_COLUMNS:
-            raise ImportError(
+            raise FileImportError(
                 f"Trop de colonnes ({len(headers)}). Maximum autorise : {MAX_COLUMNS}"
             )
 
@@ -189,10 +189,10 @@ async def parse_excel(content: bytes) -> ImportResult:
         result.total_rows = result.imported_rows
         wb.close()
 
-    except ImportError:
+    except (ImportError, FileImportError):
         raise
     except Exception as e:
-        raise ImportError(f"Erreur de lecture Excel : {str(e)}")
+        raise FileImportError(f"Erreur de lecture Excel : {str(e)}")
 
     return result
 
@@ -206,4 +206,4 @@ async def parse_file(content: bytes, filename: str) -> ImportResult:
     elif ext in (".xlsx", ".xls"):
         return await parse_excel(content)
     else:
-        raise ImportError(f"Extension '{ext}' non supportee")
+        raise FileImportError(f"Extension '{ext}' non supportee")

@@ -12,10 +12,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from database import get_db
-from models import User, Subscription, TokenBlacklist
-from app.models import Payment
-from auth import hash_password
+from app.database import get_db
+from app.models import User, Subscription, TokenBlacklist, Payment
+from app.auth import hash_password
 from app.dependencies import get_current_user
 from app.services.email import send_email
 from app.services.email_templates import payment_upgrade_email, payment_new_user_email
@@ -137,19 +136,23 @@ async def change_plan(
 
     # Downgrade to basic — immediate, no payment needed
     if target_plan == "basic":
-        current_user.plan = "basic"
-        db.commit()
+        try:
+            current_user.plan = "basic"
 
-        # Cancel active subscription
-        active_sub = db.execute(
-            select(Subscription).where(
-                Subscription.user_id == current_user.id,
-                Subscription.status == "active",
-            )
-        ).scalar_one_or_none()
-        if active_sub:
-            active_sub.status = "cancelled"
+            # Cancel active subscription
+            active_sub = db.execute(
+                select(Subscription).where(
+                    Subscription.user_id == current_user.id,
+                    Subscription.status == "active",
+                )
+            ).scalar_one_or_none()
+            if active_sub:
+                active_sub.status = "cancelled"
+
             db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
         return {
             "success": True,
@@ -243,16 +246,20 @@ async def paydunya_webhook(
     # Verify HMAC-SHA512 signature from PAYDUNYA-SIGNATURE header.
     # This check is intentionally outside the broad except block below so that
     # a signature mismatch always returns 403 and is never silently swallowed.
-    if settings.paydunya_master_key:
-        signature = request.headers.get("PAYDUNYA-SIGNATURE", "")
-        computed_hash = hmac.new(
-            settings.paydunya_master_key.encode('utf-8'),
-            body,                   # bytes — required by hmac.new()
-            hashlib.sha512,
-        ).hexdigest()
-        if not hmac.compare_digest(signature, computed_hash):
-            logger.warning("PayDunya webhook HMAC signature mismatch - rejecting")
-            raise HTTPException(status_code=403, detail="Invalid webhook signature")
+    # SECURITY: HMAC verification is mandatory — fail closed if key is not configured.
+    if not settings.paydunya_master_key:
+        logger.error("paydunya_master_key not configured — refusing all webhook requests")
+        raise HTTPException(status_code=503, detail="Payment webhook not configured")
+
+    signature = request.headers.get("PAYDUNYA-SIGNATURE", "")
+    computed_hash = hmac.new(
+        settings.paydunya_master_key.encode('utf-8'),
+        body,                   # bytes — required by hmac.new()
+        hashlib.sha512,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, computed_hash):
+        logger.warning("PayDunya webhook HMAC signature mismatch - rejecting")
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
     try:
         content_type = request.headers.get("content-type", "")
@@ -295,7 +302,7 @@ async def paydunya_webhook(
         expected_hash = hashlib.sha512(
             (settings.paydunya_master_key + invoice_token).encode('utf-8')
         ).hexdigest()
-        if received_hash != expected_hash:
+        if not hmac.compare_digest(received_hash, expected_hash):
             logger.warning("PayDunya webhook hash mismatch - rejecting")
             raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
@@ -357,53 +364,60 @@ async def paydunya_webhook(
         ).scalar_one_or_none()
 
         if existing_user:
-            existing_user.plan = plan
-            existing_user.is_active = True
-            db.commit()
+            try:
+                existing_user.plan = plan
+                existing_user.is_active = True
 
-            existing_subscription = db.execute(
-                select(Subscription).where(
-                    Subscription.user_id == existing_user.id,
-                    Subscription.status == "active"
-                )
-            ).scalar_one_or_none()
+                existing_subscription = db.execute(
+                    select(Subscription).where(
+                        Subscription.user_id == existing_user.id,
+                        Subscription.status == "active"
+                    )
+                ).scalar_one_or_none()
 
-            if existing_subscription:
-                existing_subscription.plan = plan
-                existing_subscription.start_date = now
-                existing_subscription.end_date = now + duration
-                existing_subscription.status = "active"
-            else:
-                new_subscription = Subscription(
+                if existing_subscription:
+                    existing_subscription.plan = plan
+                    existing_subscription.start_date = now
+                    existing_subscription.end_date = now + duration
+                    existing_subscription.status = "active"
+                else:
+                    new_subscription = Subscription(
+                        user_id=existing_user.id,
+                        plan=plan,
+                        status="active",
+                        start_date=now,
+                        end_date=now + duration,
+                    )
+                    db.add(new_subscription)
+
+                # Flush to get subscription IDs without committing
+                db.flush()
+
+                # Resolve subscription for payment record
+                active_sub = existing_subscription or db.execute(
+                    select(Subscription).where(
+                        Subscription.user_id == existing_user.id,
+                        Subscription.status == "active"
+                    )
+                ).scalar_one_or_none()
+
+                create_payment_record(
+                    db,
                     user_id=existing_user.id,
                     plan=plan,
-                    status="active",
-                    start_date=now,
-                    end_date=now + duration,
+                    amount=amount,
+                    token=token,
+                    status="completed",
+                    subscription_id=active_sub.id if active_sub else None,
+                    invoice_data=data,
                 )
-                db.add(new_subscription)
 
-            db.commit()
+                mark_webhook_processed(db, invoice_token, existing_user.id)
 
-            # Resolve subscription for payment record
-            active_sub = existing_subscription or db.execute(
-                select(Subscription).where(
-                    Subscription.user_id == existing_user.id,
-                    Subscription.status == "active"
-                )
-            ).scalar_one_or_none()
-
-            create_payment_record(
-                db,
-                user_id=existing_user.id,
-                plan=plan,
-                amount=amount,
-                token=token,
-                status="completed",
-                subscription_id=active_sub.id if active_sub else None,
-                invoice_data=data,
-            )
-            db.commit()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
             send_email(
                 to=email,
@@ -411,58 +425,57 @@ async def paydunya_webhook(
                 html=payment_upgrade_email(existing_user.full_name, plan),
             )
 
-            mark_webhook_processed(db, invoice_token, existing_user.id)
-            db.commit()
-
             return {"status": "success", "action": "user_upgraded", "user_id": existing_user.id}
 
         else:
             temp_password = secrets.token_urlsafe(12)
             hashed_password = hash_password(temp_password)
 
-            new_user = User(
-                email=email,
-                full_name=name,
-                hashed_password=hashed_password,
-                plan=plan,
-                is_active=True
-            )
+            try:
+                new_user = User(
+                    email=email,
+                    full_name=name,
+                    hashed_password=hashed_password,
+                    plan=plan,
+                    is_active=True
+                )
 
-            db.add(new_user)
-            db.commit()
-            db.refresh(new_user)
+                db.add(new_user)
+                db.flush()
 
-            new_subscription = Subscription(
-                user_id=new_user.id,
-                plan=plan,
-                status="active",
-                start_date=now,
-                end_date=now + duration,
-            )
-            db.add(new_subscription)
-            db.commit()
-            db.refresh(new_subscription)
+                new_subscription = Subscription(
+                    user_id=new_user.id,
+                    plan=plan,
+                    status="active",
+                    start_date=now,
+                    end_date=now + duration,
+                )
+                db.add(new_subscription)
+                db.flush()
 
-            create_payment_record(
-                db,
-                user_id=new_user.id,
-                plan=plan,
-                amount=amount,
-                token=token,
-                status="completed",
-                subscription_id=new_subscription.id,
-                invoice_data=data,
-            )
-            db.commit()
+                create_payment_record(
+                    db,
+                    user_id=new_user.id,
+                    plan=plan,
+                    amount=amount,
+                    token=token,
+                    status="completed",
+                    subscription_id=new_subscription.id,
+                    invoice_data=data,
+                )
+
+                mark_webhook_processed(db, invoice_token, new_user.id)
+
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
             send_email(
                 to=email,
                 subject="Bienvenue dans Afrikalytics Premium !",
                 html=payment_new_user_email(name, email, temp_password, plan),
             )
-
-            mark_webhook_processed(db, invoice_token, new_user.id)
-            db.commit()
 
             return {"status": "success", "action": "user_created", "user_id": new_user.id}
 

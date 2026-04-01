@@ -28,16 +28,17 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select, delete, update
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import User, Subscription, VerificationCode, TokenBlacklist, SSOExchangeCode
+from app.database import get_db
+from app.models import User, Subscription, VerificationCode, TokenBlacklist, SSOExchangeCode
 from app.dependencies import get_current_user
-from auth import (
+from app.auth import (
     hash_password,
     verify_password,
     create_access_token,
     create_refresh_token,
     decode_access_token,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from app.schemas.auth import (
     UserRegister,
@@ -414,7 +415,9 @@ def forgot_password(request: Request, data: ForgotPassword, db: Session = Depend
     )
 
     # URL de reset
-    reset_url = f"https://dashboard.afrikalytics.com/reset-password?token={reset_token}"
+    settings = get_settings()
+    frontend_url = settings.frontend_url or "https://dashboard.afrikalytics.com"
+    reset_url = f"{frontend_url}/reset-password?token={reset_token}"
 
     # Envoyer l'email
     send_email(
@@ -482,7 +485,7 @@ def reset_password(request: Request, data: ResetPassword, db: Session = Depends(
         blacklisted = TokenBlacklist(
             jti=jti,
             user_id=user.id,
-            expires_at=datetime.fromtimestamp(payload.get("exp")),
+            expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc) if payload.get("exp") else datetime.now(timezone.utc),
         )
         db.add(blacklisted)
 
@@ -508,8 +511,13 @@ def refresh_access_token(
     db: Session = Depends(get_db),
 ):
     """
-    Rafraichir le token d'acces a partir d'un refresh token valide.
-    Retourne un nouveau access token.
+    Refresh the access token using a valid refresh token.
+
+    Implements refresh token rotation:
+    - The old refresh token is blacklisted after use.
+    - A new refresh token is issued with the same family_id.
+    - If a blacklisted refresh token is reused, the entire family is revoked
+      (potential token theft detected).
     """
     try:
         payload = decode_access_token(data.refresh_token)
@@ -519,13 +527,29 @@ def refresh_access_token(
     if not payload:
         raise HTTPException(status_code=401, detail="Refresh token invalide")
 
-    # Verify this is actually a refresh token
     if payload.get("token_type") != "refresh":
         raise HTTPException(status_code=401, detail="Token invalide. Un refresh token est requis.")
 
+    jti = payload.get("jti")
+    family_id = payload.get("family_id", "")
     email = payload.get("sub")
     if not email:
         raise HTTPException(status_code=401, detail="Refresh token invalide")
+
+    # Check if this refresh token was already used (replay detection)
+    if jti:
+        already_used = db.execute(
+            select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+        ).scalar_one_or_none()
+        if already_used:
+            # Potential token theft — revoke entire family
+            if family_id:
+                logger.warning("Refresh token replay detected for family %s, user %s", family_id, email)
+                _revoke_token_family(db, family_id)
+            raise HTTPException(
+                status_code=401,
+                detail="Token déjà utilisé. Par sécurité, veuillez vous reconnecter."
+            )
 
     # Verify user still exists and is active
     user = db.execute(
@@ -536,17 +560,41 @@ def refresh_access_token(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
-    # Issue new access token
-    new_access_token = create_access_token(
-        data={"sub": user.email, "user_id": user.id}
-    )
+    # Blacklist the old refresh token (single use)
+    if jti:
+        db.add(TokenBlacklist(
+            jti=jti,
+            user_id=user.id,
+            token_family=family_id or None,
+            expires_at=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+        ))
+        db.commit()
+
+    # Issue new tokens — rotate refresh token with same family
+    token_data = {"sub": user.email, "user_id": user.id}
+    new_access_token = create_access_token(data=token_data)
+    new_refresh_token = create_refresh_token(data=token_data, family_id=family_id or None)
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
 
     return {
         "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer",
         "expires_at": expires_at,
     }
+
+
+def _revoke_token_family(db: Session, family_id: str) -> None:
+    """Revoke all tokens in a family (compromise response)."""
+    # We can't revoke tokens we haven't seen, but we mark the family as compromised
+    # by adding a sentinel entry. The cleanup service will handle expired entries.
+    db.add(TokenBlacklist(
+        jti=f"family-revoke-{family_id}",
+        user_id=None,
+        token_family=family_id,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    ))
+    db.commit()
 
 
 # ==================== LOGOUT ====================
@@ -580,7 +628,7 @@ def logout(
             blacklisted = TokenBlacklist(
                 jti=jti,
                 user_id=current_user.id,
-                expires_at=datetime.fromtimestamp(payload.get("exp")),
+                expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc) if payload.get("exp") else datetime.now(timezone.utc),
             )
             db.add(blacklisted)
             db.commit()

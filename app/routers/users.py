@@ -13,6 +13,7 @@ Endpoints:
     POST   /api/enterprise/team/add        — Ajouter un membre
     DELETE /api/enterprise/team/{member_id} — Retirer un membre
 """
+import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -87,7 +88,7 @@ def create_user_from_zapier(
     """
     if not ZAPIER_SECRET:
         raise HTTPException(status_code=503, detail="Zapier integration not configured")
-    if not x_zapier_secret or x_zapier_secret != ZAPIER_SECRET:
+    if not x_zapier_secret or not hmac.compare_digest(x_zapier_secret, ZAPIER_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     existing_user = db.execute(
@@ -239,7 +240,7 @@ def deactivate_user(
     """Desactiver un utilisateur (appele par Zapier)."""
     if not ZAPIER_SECRET:
         raise HTTPException(status_code=503, detail="Zapier integration not configured")
-    if not x_zapier_secret or x_zapier_secret != ZAPIER_SECRET:
+    if not x_zapier_secret or not hmac.compare_digest(x_zapier_secret, ZAPIER_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     user = db.execute(
@@ -290,7 +291,7 @@ def change_password(
                     blacklisted = TokenBlacklist(
                         jti=jti,
                         user_id=current_user.id,
-                        expires_at=datetime.fromtimestamp(payload.get("exp")),
+                        expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc) if payload.get("exp") else datetime.now(timezone.utc),
                     )
                     db.add(blacklisted)
 
