@@ -38,24 +38,24 @@ def get_tenant_db(
     - app.current_user_id: the authenticated user's ID
     - app.current_user_role: the user's admin role (or empty string for regular users)
 
-    These are SET LOCAL, meaning they only apply within the current transaction
-    and are automatically reset when the transaction ends.
+    Uses SET (connection-scoped) instead of SET LOCAL (transaction-scoped)
+    because SET LOCAL requires an active transaction to take effect.
+    Variables are explicitly reset when the session is released to avoid
+    leaking tenant context to the next request via pooled connections.
     """
     try:
-        # Set tenant context for RLS policies
+        # Set tenant context for RLS policies (connection-scoped)
         # Using parameterized text() to prevent SQL injection
         db.execute(
-            text("SET LOCAL app.current_user_id = :user_id"),
+            text("SET app.current_user_id = :user_id"),
             {"user_id": str(current_user.id)},
         )
 
-        if current_user.is_admin and current_user.admin_role:
-            db.execute(
-                text("SET LOCAL app.current_user_role = :role"),
-                {"role": current_user.admin_role},
-            )
-        else:
-            db.execute(text("SET LOCAL app.current_user_role = ''"))
+        role = current_user.admin_role if current_user.is_admin and current_user.admin_role else ""
+        db.execute(
+            text("SET app.current_user_role = :role"),
+            {"role": role},
+        )
 
         logger.debug(
             "Tenant context set: user_id=%s, role=%s",
@@ -68,6 +68,14 @@ def get_tenant_db(
     except Exception:
         db.rollback()
         raise
+    finally:
+        # Reset tenant context to prevent leaking to the next request
+        # via pooled connections. RESET restores the parameter to its default.
+        try:
+            db.execute(text("RESET app.current_user_id"))
+            db.execute(text("RESET app.current_user_role"))
+        except Exception:
+            logger.warning("Failed to reset tenant context on connection", exc_info=True)
 
 
 def get_admin_tenant_db(
@@ -91,11 +99,11 @@ def get_admin_tenant_db(
 
     try:
         db.execute(
-            text("SET LOCAL app.current_user_id = :user_id"),
+            text("SET app.current_user_id = :user_id"),
             {"user_id": str(current_user.id)},
         )
         db.execute(
-            text("SET LOCAL app.current_user_role = :role"),
+            text("SET app.current_user_role = :role"),
             {"role": current_user.admin_role or "super_admin"},
         )
 
@@ -104,3 +112,10 @@ def get_admin_tenant_db(
     except Exception:
         db.rollback()
         raise
+    finally:
+        # Reset tenant context to prevent leaking to the next request
+        try:
+            db.execute(text("RESET app.current_user_id"))
+            db.execute(text("RESET app.current_user_role"))
+        except Exception:
+            logger.warning("Failed to reset admin tenant context on connection", exc_info=True)

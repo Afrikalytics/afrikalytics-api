@@ -13,6 +13,7 @@ Endpoints:
     POST   /api/enterprise/team/add        — Ajouter un membre
     DELETE /api/enterprise/team/{member_id} — Retirer un membre
 """
+import hmac
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -76,7 +77,7 @@ if not ZAPIER_SECRET:
 
 @router.post("/api/users/create")
 @limiter.limit("10/minute")
-async def create_user_from_zapier(
+def create_user_from_zapier(
     request: Request,
     data: UserCreate,
     db: Session = Depends(get_db),
@@ -87,7 +88,7 @@ async def create_user_from_zapier(
     """
     if not ZAPIER_SECRET:
         raise HTTPException(status_code=503, detail="Zapier integration not configured")
-    if not x_zapier_secret or x_zapier_secret != ZAPIER_SECRET:
+    if not x_zapier_secret or not hmac.compare_digest(x_zapier_secret, ZAPIER_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     existing_user = db.execute(
@@ -132,14 +133,14 @@ async def create_user_from_zapier(
 
 @router.get("/api/users/me", response_model=UserResponse)
 @limiter.limit("30/minute")
-async def get_current_user_info(request: Request, current_user: User = Depends(get_current_user)):
+def get_current_user_info(request: Request, current_user: User = Depends(get_current_user)):
     """Recuperer le profil de l'utilisateur connecte."""
     return current_user
 
 
 @router.get("/api/users/quota")
 @limiter.limit("30/minute")
-async def get_user_quota(
+def get_user_quota(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -209,7 +210,7 @@ async def get_user_quota(
 
 @router.get("/api/users/{user_id}", response_model=UserResponse)
 @limiter.limit("30/minute")
-async def get_user(
+def get_user(
     request: Request,
     user_id: int,
     db: Session = Depends(get_db),
@@ -230,7 +231,7 @@ async def get_user(
 
 @router.put("/api/users/{user_id}/deactivate")
 @limiter.limit("10/minute")
-async def deactivate_user(
+def deactivate_user(
     request: Request,
     user_id: int,
     db: Session = Depends(get_db),
@@ -239,7 +240,7 @@ async def deactivate_user(
     """Desactiver un utilisateur (appele par Zapier)."""
     if not ZAPIER_SECRET:
         raise HTTPException(status_code=503, detail="Zapier integration not configured")
-    if not x_zapier_secret or x_zapier_secret != ZAPIER_SECRET:
+    if not x_zapier_secret or not hmac.compare_digest(x_zapier_secret, ZAPIER_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     user = db.execute(
@@ -256,7 +257,7 @@ async def deactivate_user(
 
 @router.put("/api/users/change-password")
 @limiter.limit("10/minute")
-async def change_password(
+def change_password(
     request: Request,
     data: PasswordChange,
     authorization: str = Header(None),
@@ -290,7 +291,7 @@ async def change_password(
                     blacklisted = TokenBlacklist(
                         jti=jti,
                         user_id=current_user.id,
-                        expires_at=datetime.fromtimestamp(payload.get("exp")),
+                        expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc) if payload.get("exp") else datetime.now(timezone.utc),
                     )
                     db.add(blacklisted)
 
@@ -310,7 +311,7 @@ async def change_password(
 
 @router.get("/api/enterprise/team")
 @limiter.limit("30/minute")
-async def get_enterprise_team(
+def get_enterprise_team(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -358,7 +359,7 @@ async def get_enterprise_team(
 
 @router.post("/api/enterprise/team/add")
 @limiter.limit("10/minute")
-async def add_enterprise_team_member(
+def add_enterprise_team_member(
     request: Request,
     data: EnterpriseUserAdd,
     db: Session = Depends(get_db),
@@ -491,7 +492,7 @@ async def add_enterprise_team_member(
 
 @router.delete("/api/enterprise/team/{member_id}")
 @limiter.limit("5/minute")
-async def remove_enterprise_team_member(
+def remove_enterprise_team_member(
     request: Request,
     member_id: int,
     db: Session = Depends(get_db),

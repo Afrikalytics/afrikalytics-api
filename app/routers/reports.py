@@ -3,14 +3,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-from typing import List
-
 logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.middleware.tenant import get_tenant_db
 from app.models import Report, Study, User
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission, check_content_access
 from app.schemas.reports import ReportCreate, ReportUpdate, ReportResponse
 from app.services.audit import log_action
@@ -19,23 +18,28 @@ from app.rate_limit import limiter
 router = APIRouter()
 
 
-@router.get("/api/reports", response_model=List[ReportResponse])
+@router.get("/api/reports")
 @limiter.limit("30/minute")
-async def get_all_reports(request: Request, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
-    reports = db.execute(
+def get_all_reports(
+    request: Request,
+    pagination: PaginationParams = Depends(),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    stmt = (
         select(Report)
-        .where(Report.is_available.is_(True))
+        .where(Report.is_available.is_(True), Report.deleted_at.is_(None))
         .order_by(Report.created_at.desc())
-    ).scalars().all()
-    return reports
+    )
+    return paginate(db, stmt, pagination)
 
 
 @router.get("/api/reports/study/{study_id}", response_model=ReportResponse)
 @limiter.limit("30/minute")
-async def get_report_by_study(request: Request, study_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
+def get_report_by_study(request: Request, study_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     report = db.execute(
         select(Report)
-        .where(Report.study_id == study_id, Report.is_available.is_(True))
+        .where(Report.study_id == study_id, Report.is_available.is_(True), Report.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
@@ -45,7 +49,7 @@ async def get_report_by_study(request: Request, study_id: int, db: Session = Dep
 
 @router.get("/api/reports/study/{study_id}/type/{report_type}", response_model=ReportResponse)
 @limiter.limit("30/minute")
-async def get_report_by_study_and_type(
+def get_report_by_study_and_type(
     request: Request, study_id: int, report_type: str, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)
 ):
     report = db.execute(
@@ -54,6 +58,7 @@ async def get_report_by_study_and_type(
             Report.study_id == study_id,
             Report.report_type == report_type,
             Report.is_available.is_(True),
+            Report.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
     if not report:
@@ -64,9 +69,9 @@ async def get_report_by_study_and_type(
 
 @router.get("/api/reports/{report_id}", response_model=ReportResponse)
 @limiter.limit("30/minute")
-async def get_report(request: Request, report_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
+def get_report(request: Request, report_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     report = db.execute(
-        select(Report).where(Report.id == report_id)
+        select(Report).where(Report.id == report_id, Report.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
@@ -80,7 +85,7 @@ async def get_report(request: Request, report_id: int, db: Session = Depends(get
 
 @router.post("/api/reports", response_model=ReportResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_report(
+def create_report(
     data: ReportCreate,
     request: Request,
     db: Session = Depends(get_tenant_db),
@@ -118,7 +123,7 @@ async def create_report(
 
 @router.put("/api/reports/{report_id}", response_model=ReportResponse)
 @limiter.limit("10/minute")
-async def update_report(
+def update_report(
     report_id: int,
     data: ReportUpdate,
     request: Request,
@@ -156,7 +161,7 @@ async def update_report(
 
 @router.delete("/api/reports/{report_id}")
 @limiter.limit("5/minute")
-async def delete_report(
+def delete_report(
     report_id: int,
     request: Request,
     db: Session = Depends(get_tenant_db),
@@ -194,14 +199,14 @@ async def delete_report(
                 study.report_url_basic = None
                 study.report_url_premium = None
 
-    db.delete(report)
+    report.soft_delete()
     db.commit()
     return {"message": "Rapport supprimé avec succès"}
 
 
 @router.post("/api/reports/{report_id}/download")
 @limiter.limit("10/minute")
-async def track_download(request: Request, report_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
+def track_download(request: Request, report_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     report = db.execute(
         select(Report).where(Report.id == report_id)
     ).scalar_one_or_none()
@@ -229,7 +234,7 @@ async def track_download(request: Request, report_id: int, db: Session = Depends
 
 @router.post("/api/reports/study/{study_id}/type/{report_type}/download")
 @limiter.limit("10/minute")
-async def track_download_by_type(
+def track_download_by_type(
     request: Request, study_id: int, report_type: str, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)
 ):
     report = db.execute(

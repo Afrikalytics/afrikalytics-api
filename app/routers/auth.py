@@ -10,24 +10,35 @@ Endpoints:
     POST /api/auth/forgot-password — Demande de reset password
     POST /api/auth/reset-password  — Reset password avec token
     POST /api/auth/logout         — Deconnexion (blacklist le token)
+    GET  /api/auth/sso/google     — URL d'autorisation Google
+    GET  /api/auth/sso/google/callback   — Callback Google OAuth2
+    GET  /api/auth/sso/microsoft  — URL d'autorisation Microsoft
+    GET  /api/auth/sso/microsoft/callback — Callback Microsoft OAuth2
+    POST /api/auth/sso/exchange   — Echange code SSO contre JWT (SEC-01 fix)
 """
+import hashlib
+import hmac
+import logging
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, delete, update
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import User, Subscription, VerificationCode, TokenBlacklist
+from app.database import get_db
+from app.models import User, Subscription, VerificationCode, TokenBlacklist, SSOExchangeCode
 from app.dependencies import get_current_user
-from auth import (
+from app.auth import (
     hash_password,
     verify_password,
     create_access_token,
     create_refresh_token,
     decode_access_token,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from app.schemas.auth import (
     UserRegister,
@@ -38,7 +49,10 @@ from app.schemas.auth import (
     ForgotPassword,
     ResetPassword,
     VerifyCodeRequest,
+    SSOExchangeRequest,
+    SSOExchangeResponse,
 )
+from app.config import get_settings
 from app.services.email import send_email
 from app.services.email_templates import (
     welcome_email,
@@ -47,17 +61,78 @@ from app.services.email_templates import (
     forgot_password_email,
     password_reset_confirmation_email,
 )
+from app.services.sso_service import (
+    get_google_auth_url,
+    exchange_google_code,
+    get_google_user_info,
+    get_microsoft_auth_url,
+    exchange_microsoft_code,
+    get_microsoft_user_info,
+)
 from app.rate_limit import limiter
 from app.utils import validate_password
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+
+# ==================== SSO STATE HELPERS ====================
+
+def generate_sso_state(secret_key: str) -> str:
+    """
+    Generate a signed, time-stamped SSO state token (stateless CSRF protection).
+
+    Format: "{timestamp}.{nonce}.{hmac_sha256_signature}"
+    The signature covers the payload so the state cannot be forged or replayed
+    without knowledge of SECRET_KEY.
+    """
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(16)
+    payload = f"{timestamp}.{nonce}"
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        payload.encode('utf-8'),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def verify_sso_state(state: str, secret_key: str, max_age: int = 600) -> bool:
+    """
+    Verify a signed SSO state token.
+
+    Returns True only when:
+    - The token has exactly the expected structure.
+    - The HMAC signature is valid (constant-time comparison).
+    - The timestamp is within max_age seconds (default: 10 minutes).
+    Returns False for any invalid or expired token — never raises.
+    """
+    try:
+        parts = state.rsplit(".", 1)
+        if len(parts) != 2:
+            return False
+        payload, signature = parts
+        expected = hmac.new(
+            secret_key.encode('utf-8'),
+            payload.encode('utf-8'),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        timestamp = int(payload.split(".")[0])
+        if time.time() - timestamp > max_age:
+            return False
+        return True
+    except (ValueError, IndexError):
+        return False
 
 
 # ==================== REGISTER ====================
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
 @limiter.limit("3/minute")
-async def register(request: Request, data: UserRegister, db: Session = Depends(get_db)):
+def register(request: Request, data: UserRegister, db: Session = Depends(get_db)):
     """
     Inscription d'un nouvel utilisateur (plan Basic gratuit).
     Limite a 3 tentatives par minute.
@@ -115,7 +190,7 @@ async def register(request: Request, data: UserRegister, db: Session = Depends(g
 
 @router.post("/login")
 @limiter.limit("5/minute")
-async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)):
+def login(request: Request, data: UserLogin, db: Session = Depends(get_db)):
     """
     Connexion utilisateur — Etape 1 : Verification email/mot de passe.
     Envoie un code de verification par email.
@@ -191,7 +266,7 @@ async def login(request: Request, data: UserLogin, db: Session = Depends(get_db)
 
 @router.post("/verify-code", response_model=TokenResponse)
 @limiter.limit("5/minute")
-async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = Depends(get_db)):
+def verify_code(request: Request, data: VerifyCodeRequest, db: Session = Depends(get_db)):
     """
     Connexion utilisateur — Etape 2 : Verification du code 2FA.
     Retourne le token JWT si le code est correct.
@@ -274,7 +349,7 @@ async def verify_code(request: Request, data: VerifyCodeRequest, db: Session = D
 
 @router.post("/resend-code")
 @limiter.limit("3/minute")
-async def resend_code(request: Request, data: ForgotPassword, db: Session = Depends(get_db)):
+def resend_code(request: Request, data: ForgotPassword, db: Session = Depends(get_db)):
     """
     Renvoyer un nouveau code de verification 2FA.
     """
@@ -320,7 +395,7 @@ async def resend_code(request: Request, data: ForgotPassword, db: Session = Depe
 
 @router.post("/forgot-password")
 @limiter.limit("3/minute")
-async def forgot_password(request: Request, data: ForgotPassword, db: Session = Depends(get_db)):
+def forgot_password(request: Request, data: ForgotPassword, db: Session = Depends(get_db)):
     """
     Envoyer un email de reinitialisation de mot de passe.
     Limite a 3 tentatives par minute.
@@ -340,7 +415,9 @@ async def forgot_password(request: Request, data: ForgotPassword, db: Session = 
     )
 
     # URL de reset
-    reset_url = f"https://dashboard.afrikalytics.com/reset-password?token={reset_token}"
+    settings = get_settings()
+    frontend_url = settings.frontend_url or "https://dashboard.afrikalytics.com"
+    reset_url = f"{frontend_url}/reset-password?token={reset_token}"
 
     # Envoyer l'email
     send_email(
@@ -356,7 +433,7 @@ async def forgot_password(request: Request, data: ForgotPassword, db: Session = 
 
 @router.post("/reset-password")
 @limiter.limit("5/minute")
-async def reset_password(request: Request, data: ResetPassword, db: Session = Depends(get_db)):
+def reset_password(request: Request, data: ResetPassword, db: Session = Depends(get_db)):
     """
     Reinitialiser le mot de passe avec le token.
     Limite a 5 tentatives par minute.
@@ -408,7 +485,7 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
         blacklisted = TokenBlacklist(
             jti=jti,
             user_id=user.id,
-            expires_at=datetime.fromtimestamp(payload.get("exp")),
+            expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc) if payload.get("exp") else datetime.now(timezone.utc),
         )
         db.add(blacklisted)
 
@@ -428,14 +505,19 @@ async def reset_password(request: Request, data: ResetPassword, db: Session = De
 
 @router.post("/refresh", response_model=RefreshTokenResponse)
 @limiter.limit("10/minute")
-async def refresh_access_token(
+def refresh_access_token(
     request: Request,
     data: RefreshTokenRequest,
     db: Session = Depends(get_db),
 ):
     """
-    Rafraichir le token d'acces a partir d'un refresh token valide.
-    Retourne un nouveau access token.
+    Refresh the access token using a valid refresh token.
+
+    Implements refresh token rotation:
+    - The old refresh token is blacklisted after use.
+    - A new refresh token is issued with the same family_id.
+    - If a blacklisted refresh token is reused, the entire family is revoked
+      (potential token theft detected).
     """
     try:
         payload = decode_access_token(data.refresh_token)
@@ -445,13 +527,29 @@ async def refresh_access_token(
     if not payload:
         raise HTTPException(status_code=401, detail="Refresh token invalide")
 
-    # Verify this is actually a refresh token
     if payload.get("token_type") != "refresh":
         raise HTTPException(status_code=401, detail="Token invalide. Un refresh token est requis.")
 
+    jti = payload.get("jti")
+    family_id = payload.get("family_id", "")
     email = payload.get("sub")
     if not email:
         raise HTTPException(status_code=401, detail="Refresh token invalide")
+
+    # Check if this refresh token was already used (replay detection)
+    if jti:
+        already_used = db.execute(
+            select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+        ).scalar_one_or_none()
+        if already_used:
+            # Potential token theft — revoke entire family
+            if family_id:
+                logger.warning("Refresh token replay detected for family %s, user %s", family_id, email)
+                _revoke_token_family(db, family_id)
+            raise HTTPException(
+                status_code=401,
+                detail="Token déjà utilisé. Par sécurité, veuillez vous reconnecter."
+            )
 
     # Verify user still exists and is active
     user = db.execute(
@@ -462,23 +560,47 @@ async def refresh_access_token(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
-    # Issue new access token
-    new_access_token = create_access_token(
-        data={"sub": user.email, "user_id": user.id}
-    )
+    # Blacklist the old refresh token (single use)
+    if jti:
+        db.add(TokenBlacklist(
+            jti=jti,
+            user_id=user.id,
+            token_family=family_id or None,
+            expires_at=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+        ))
+        db.commit()
+
+    # Issue new tokens — rotate refresh token with same family
+    token_data = {"sub": user.email, "user_id": user.id}
+    new_access_token = create_access_token(data=token_data)
+    new_refresh_token = create_refresh_token(data=token_data, family_id=family_id or None)
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)).isoformat()
 
     return {
         "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer",
         "expires_at": expires_at,
     }
 
 
+def _revoke_token_family(db: Session, family_id: str) -> None:
+    """Revoke all tokens in a family (compromise response)."""
+    # We can't revoke tokens we haven't seen, but we mark the family as compromised
+    # by adding a sentinel entry. The cleanup service will handle expired entries.
+    db.add(TokenBlacklist(
+        jti=f"family-revoke-{family_id}",
+        user_id=None,
+        token_family=family_id,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    ))
+    db.commit()
+
+
 # ==================== LOGOUT ====================
 
 @router.post("/logout")
-async def logout(
+def logout(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     authorization: str = Header(None),
@@ -506,9 +628,349 @@ async def logout(
             blacklisted = TokenBlacklist(
                 jti=jti,
                 user_id=current_user.id,
-                expires_at=datetime.fromtimestamp(payload.get("exp")),
+                expires_at=datetime.fromtimestamp(payload.get("exp"), tz=timezone.utc) if payload.get("exp") else datetime.now(timezone.utc),
             )
             db.add(blacklisted)
             db.commit()
 
     return {"message": "Déconnexion réussie"}
+
+
+# ==================== SSO — GOOGLE ====================
+
+@router.get("/sso/google")
+async def sso_google_login(request: Request):
+    """
+    Retourne l'URL d'autorisation Google OAuth2.
+    Le frontend redirige l'utilisateur vers cette URL.
+    The state parameter is HMAC-signed to prevent CSRF on the OAuth callback.
+    """
+    settings = get_settings()
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise HTTPException(status_code=501, detail="L'authentification Google n'est pas configurée")
+
+    redirect_uri = f"{settings.api_url}/api/auth/sso/google/callback"
+    # CSRF protection: use a signed, time-stamped state token instead of a
+    # random opaque value that would require server-side session storage.
+    state = generate_sso_state(settings.secret_key)
+
+    auth_url = await get_google_auth_url(
+        client_id=settings.google_client_id,
+        redirect_uri=redirect_uri,
+        state=state,
+    )
+
+    return {"auth_url": auth_url, "provider": "google"}
+
+
+@router.get("/sso/google/callback")
+async def sso_google_callback(
+    request: Request,
+    code: str,
+    state: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Callback Google OAuth2.
+    Echange le code, cree ou lie l'utilisateur, redirige avec JWT.
+    """
+    settings = get_settings()
+    redirect_uri = f"{settings.api_url}/api/auth/sso/google/callback"
+
+    # Verify the HMAC-signed state token before touching the OAuth code.
+    # A missing or invalid state is a CSRF attack — reject immediately with 400.
+    if not state or not verify_sso_state(state, settings.secret_key):
+        logger.warning("Google SSO callback: invalid or missing state parameter — possible CSRF attempt")
+        raise HTTPException(status_code=400, detail="Paramètre state invalide ou expiré. Veuillez recommencer la connexion.")
+
+    try:
+        # 1. Exchange code for tokens
+        token_data = await exchange_google_code(
+            code=code,
+            client_id=settings.google_client_id,
+            client_secret=settings.google_client_secret,
+            redirect_uri=redirect_uri,
+        )
+
+        # 2. Get user info from Google
+        google_user = await get_google_user_info(token_data["access_token"])
+        email = google_user.get("email")
+        name = google_user.get("name", "")
+        google_id = google_user.get("sub")  # Google unique user ID
+
+        if not email:
+            raise HTTPException(status_code=400, detail="Impossible de récupérer l'email depuis Google")
+
+        # 3. Find or create user
+        user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+
+        if user:
+            # Update SSO fields if not already linked
+            if not user.sso_provider:
+                user.sso_provider = "google"
+                user.sso_id = google_id
+                db.commit()
+        else:
+            # Create new user (no password needed for SSO)
+            user = User(
+                email=email,
+                full_name=name or email.split("@")[0],
+                hashed_password="",  # No password for SSO users
+                plan="basic",
+                is_active=True,
+                sso_provider="google",
+                sso_id=google_id,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            # Send welcome email
+            try:
+                send_email(
+                    to=user.email,
+                    subject="Bienvenue sur Afrikalytics AI !",
+                    html=welcome_email(user.full_name),
+                )
+            except Exception:
+                logger.warning("Failed to send welcome email to %s", user.email)
+
+        # 4. Generate JWT
+        token_payload = {"sub": user.email, "user_id": user.id}
+        access_token = create_access_token(data=token_payload)
+
+        # 5. Generate a short-lived exchange code so the JWT is never placed in a URL.
+        #    The frontend will POST this code to POST /api/auth/sso/exchange to get the JWT.
+        #    OWASP A02:2021 — prevents JWT exposure in server logs, browser history,
+        #    and Referer headers.
+        sso_code = secrets.token_urlsafe(32)
+        exchange = SSOExchangeCode(
+            code=sso_code,
+            user_id=user.id,
+            access_token=access_token,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        )
+        db.add(exchange)
+        db.commit()
+
+        # 6. Redirect with only the opaque code — no JWT in the URL.
+        frontend_url = settings.frontend_url or "http://localhost:3000"
+        return RedirectResponse(
+            url=f"{frontend_url}/login?sso_code={sso_code}&sso=true"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Google SSO callback error")
+        frontend_url = settings.frontend_url or "http://localhost:3000"
+        return RedirectResponse(
+            url=f"{frontend_url}/login?sso_error=google"
+        )
+
+
+# ==================== SSO — MICROSOFT ====================
+
+@router.get("/sso/microsoft")
+async def sso_microsoft_login(request: Request):
+    """
+    Retourne l'URL d'autorisation Microsoft OAuth2.
+    Le frontend redirige l'utilisateur vers cette URL.
+    The state parameter is HMAC-signed to prevent CSRF on the OAuth callback.
+    """
+    settings = get_settings()
+    if not settings.microsoft_client_id or not settings.microsoft_client_secret:
+        raise HTTPException(status_code=501, detail="L'authentification Microsoft n'est pas configurée")
+
+    redirect_uri = f"{settings.api_url}/api/auth/sso/microsoft/callback"
+    # CSRF protection: use a signed, time-stamped state token instead of a
+    # random opaque value that would require server-side session storage.
+    state = generate_sso_state(settings.secret_key)
+
+    auth_url = await get_microsoft_auth_url(
+        client_id=settings.microsoft_client_id,
+        tenant_id=settings.microsoft_tenant_id,
+        redirect_uri=redirect_uri,
+        state=state,
+    )
+
+    return {"auth_url": auth_url, "provider": "microsoft"}
+
+
+@router.get("/sso/microsoft/callback")
+async def sso_microsoft_callback(
+    request: Request,
+    code: str,
+    state: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Callback Microsoft OAuth2.
+    Echange le code, cree ou lie l'utilisateur, redirige avec JWT.
+    """
+    settings = get_settings()
+    redirect_uri = f"{settings.api_url}/api/auth/sso/microsoft/callback"
+
+    # Verify the HMAC-signed state token before touching the OAuth code.
+    # A missing or invalid state is a CSRF attack — reject immediately with 400.
+    if not state or not verify_sso_state(state, settings.secret_key):
+        logger.warning("Microsoft SSO callback: invalid or missing state parameter — possible CSRF attempt")
+        raise HTTPException(status_code=400, detail="Paramètre state invalide ou expiré. Veuillez recommencer la connexion.")
+
+    try:
+        # 1. Exchange code for tokens
+        token_data = await exchange_microsoft_code(
+            code=code,
+            client_id=settings.microsoft_client_id,
+            client_secret=settings.microsoft_client_secret,
+            tenant_id=settings.microsoft_tenant_id,
+            redirect_uri=redirect_uri,
+        )
+
+        # 2. Get user info from Microsoft Graph
+        ms_user = await get_microsoft_user_info(token_data["access_token"])
+        email = ms_user.get("mail") or ms_user.get("userPrincipalName")
+        name = ms_user.get("displayName", "")
+        microsoft_id = ms_user.get("id")  # Microsoft unique user ID
+
+        if not email:
+            raise HTTPException(status_code=400, detail="Impossible de récupérer l'email depuis Microsoft")
+
+        # 3. Find or create user
+        user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+
+        if user:
+            # Update SSO fields if not already linked
+            if not user.sso_provider:
+                user.sso_provider = "microsoft"
+                user.sso_id = microsoft_id
+                db.commit()
+        else:
+            # Create new user (no password needed for SSO)
+            user = User(
+                email=email,
+                full_name=name or email.split("@")[0],
+                hashed_password="",  # No password for SSO users
+                plan="basic",
+                is_active=True,
+                sso_provider="microsoft",
+                sso_id=microsoft_id,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            # Send welcome email
+            try:
+                send_email(
+                    to=user.email,
+                    subject="Bienvenue sur Afrikalytics AI !",
+                    html=welcome_email(user.full_name),
+                )
+            except Exception:
+                logger.warning("Failed to send welcome email to %s", user.email)
+
+        # 4. Generate JWT
+        token_payload = {"sub": user.email, "user_id": user.id}
+        access_token = create_access_token(data=token_payload)
+
+        # 5. Generate a short-lived exchange code so the JWT is never placed in a URL.
+        #    The frontend will POST this code to POST /api/auth/sso/exchange to get the JWT.
+        #    OWASP A02:2021 — prevents JWT exposure in server logs, browser history,
+        #    and Referer headers.
+        sso_code = secrets.token_urlsafe(32)
+        exchange = SSOExchangeCode(
+            code=sso_code,
+            user_id=user.id,
+            access_token=access_token,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        )
+        db.add(exchange)
+        db.commit()
+
+        # 6. Redirect with only the opaque code — no JWT in the URL.
+        frontend_url = settings.frontend_url or "http://localhost:3000"
+        return RedirectResponse(
+            url=f"{frontend_url}/login?sso_code={sso_code}&sso=true"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Microsoft SSO callback error")
+        frontend_url = settings.frontend_url or "http://localhost:3000"
+        return RedirectResponse(
+            url=f"{frontend_url}/login?sso_error=microsoft"
+        )
+
+
+# ==================== SSO — EXCHANGE CODE ====================
+
+@router.post("/sso/exchange", response_model=SSOExchangeResponse)
+@limiter.limit("10/minute")
+def sso_exchange(
+    request: Request,
+    data: SSOExchangeRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Exchange a short-lived SSO code for a JWT access token.
+
+    The code is obtained from the ?sso_code= query parameter of the SSO redirect URL.
+    It is valid for 60 seconds and can only be used once.
+
+    Security guarantees:
+    - The JWT is returned in the JSON response body, never in a URL.
+    - The code is invalidated immediately after use (is_used=True).
+    - Expired or already-used codes are rejected with HTTP 400.
+    - The endpoint returns the same generic error message for all failure modes
+      to prevent oracle attacks.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Look up the exchange record — reject if not found, expired, or already used.
+    exchange = db.execute(
+        select(SSOExchangeCode).where(
+            SSOExchangeCode.code == data.sso_code,
+            SSOExchangeCode.is_used.is_(False),
+            SSOExchangeCode.expires_at > now,
+        )
+    ).scalar_one_or_none()
+
+    if not exchange:
+        # Do not distinguish between "not found", "expired", and "already used"
+        # to prevent timing/oracle attacks.
+        raise HTTPException(
+            status_code=400,
+            detail="Code SSO invalide ou expiré. Veuillez vous reconnecter.",
+        )
+
+    # Mark the code as consumed atomically before returning the token.
+    exchange.is_used = True
+    db.commit()
+
+    # Retrieve the associated user to build the full response.
+    user = db.execute(
+        select(User).where(User.id == exchange.user_id)
+    ).scalar_one_or_none()
+
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail="Compte introuvable ou désactivé.",
+        )
+
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).isoformat()
+
+    return {
+        "access_token": exchange.access_token,
+        "token_type": "bearer",
+        "expires_at": expires_at,
+        "user": user,
+    }

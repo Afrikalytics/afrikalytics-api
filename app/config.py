@@ -18,10 +18,14 @@ class Settings(BaseSettings):
     database_url: str = Field(..., description="PostgreSQL connection URL")
 
     # --- Auth / JWT ---
-    secret_key: str = Field(..., description="JWT signing key")
-    algorithm: str = "HS256"
+    secret_key: str = Field(..., description="JWT signing key (HS256 fallback)")
+    algorithm: str = "RS256"
     access_token_expire_days: int = 7
     refresh_token_expire_days: int = 30
+    # RSA keys for RS256 — PEM-encoded, base64-wrapped for env vars.
+    # If empty, auto-generated at startup (dev only).
+    jwt_private_key: str = Field(default="", description="Base64-encoded RSA private key PEM")
+    jwt_public_key: str = Field(default="", description="Base64-encoded RSA public key PEM")
 
     # --- Email (Resend) ---
     resend_api_key: str = Field(default="", description="Resend API key")
@@ -64,6 +68,15 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         description="Redis connection URL",
     )
+
+    # --- SSO Google ---
+    google_client_id: str = Field(default="", description="Google OAuth2 Client ID")
+    google_client_secret: str = Field(default="", description="Google OAuth2 Client Secret")
+
+    # --- SSO Microsoft ---
+    microsoft_client_id: str = Field(default="", description="Microsoft OAuth2 Client ID")
+    microsoft_client_secret: str = Field(default="", description="Microsoft OAuth2 Client Secret")
+    microsoft_tenant_id: str = Field(default="common", description="Microsoft tenant ID")
 
     # --- Integrations ---
     zapier_secret: str = Field(default="")

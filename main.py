@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 
 import sentry_sdk
@@ -9,10 +10,12 @@ from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import get_settings
 from app.rate_limit import limiter
 from app.routers.admin import router as admin_router
+from app.routers.analytics import router as analytics_router
 from app.routers.auth import router as auth_router
 from app.routers.blog import router as blog_router
 from app.routers.contacts import router as contacts_router
@@ -22,11 +25,16 @@ from app.routers.newsletter import router as newsletter_router
 from app.routers.payments import router as payments_router
 from app.routers.reports import router as reports_router
 from app.routers.studies import router as studies_router
+from app.routers.integrations import router as integrations_router
+from app.routers.notifications import router as notifications_router
+from app.routers.exports import router as exports_router
 from app.routers.users import router as users_router
 from app.database import engine  # noqa: F401 — kept for potential direct usage
 from app.models import Base  # noqa: F401 — kept so models are registered
+from app.services.audit_events import register_audit_listeners
 
 settings = get_settings()
+is_prod = settings.environment == "production"
 
 # Initialize Sentry
 if settings.sentry_dsn:
@@ -47,6 +55,9 @@ if settings.sentry_dsn:
 # Run: alembic upgrade head
 # For existing databases: alembic stamp head
 
+# Register automatic audit logging for CRUD operations
+register_audit_listeners()
+
 app = FastAPI(
     title="Afrikalytics API",
     description=(
@@ -55,11 +66,31 @@ app = FastAPI(
         "Legacy `/api/` paths redirect to `/api/v1/` with HTTP 307."
     ),
     version="1.0.0",
+    # Disable interactive docs in production to avoid exposing the full attack surface.
+    # Set ENVIRONMENT=development in .env to re-enable during local development.
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json",
 )
 
 # Rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# --- Request Correlation ID Middleware ---
+# Generates a unique ID per request for end-to-end tracing across logs and Sentry.
+# Accepts an incoming X-Request-ID header (from Vercel/Railway proxy) or generates one.
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    # Store on request.state so routers/services can access it
+    request.state.request_id = request_id
+    # Tag Sentry events with this request ID
+    sentry_sdk.set_tag("request_id", request_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 # --- Security Headers Middleware ---
@@ -182,6 +213,14 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
+# --- Proxy Headers Middleware (SEC-05) ---
+# Must be registered LAST so it runs FIRST in the middleware chain (Starlette reverse order).
+# Rewrites request.client.host to the real client IP from X-Forwarded-For before any
+# other middleware (CORS, CSRF, rate limiting) inspects the request.
+# trusted_hosts="*" is safe here because the custom get_real_client_ip() in rate_limit.py
+# performs its own trusted-proxy validation based on RFC 1918 ranges.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
 # Enregistrer les routers
 app.include_router(auth_router)
 app.include_router(users_router)
@@ -194,24 +233,41 @@ app.include_router(contacts_router)
 app.include_router(blog_router)
 app.include_router(newsletter_router)
 app.include_router(payments_router)
+app.include_router(notifications_router)
+app.include_router(integrations_router)
+app.include_router(analytics_router)
+app.include_router(exports_router)
 
 
 # Routes racine
 @app.get("/")
 def read_root():
-    return {
+    payload: dict = {
         "message": "Bienvenue sur l'API Afrikalytics AI",
         "version": "1.0.0",
         "api_version": "v1",
         "status": "online",
-        "docs": "/docs",
-        "endpoints": "/api/v1/"
+        "endpoints": "/api/v1/",
     }
+    # Only expose the docs URL outside production to avoid leaking the attack surface.
+    if not is_prod:
+        payload["docs"] = "/docs"
+    return payload
 
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc)}
+    from app.services.cache import redis_health
+
+    redis_status = redis_health()
+    overall = "healthy" if redis_status["status"] == "connected" else "degraded"
+    return {
+        "status": overall,
+        "timestamp": datetime.now(timezone.utc),
+        "services": {
+            "redis": redis_status,
+        },
+    }
 
 
 if __name__ == "__main__":

@@ -5,15 +5,16 @@ Router pour les études de marché (CRUD + import CSV/Excel).
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 from app.database import get_db
-from app.models import User, Study
+from app.models import User, Study, StudyDataset
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission
 from app.schemas.studies import StudyCreate, StudyUpdate, StudyResponse
 from app.schemas.imports import ImportResponse, ImportValidationResult, ImportPreviewResponse
@@ -22,35 +23,32 @@ from app.services.cache import cache_get, cache_set, cache_delete_pattern
 from app.services.import_service import (
     validate_file,
     parse_file,
-    ImportError as FileImportError,
+    FileImportError,
 )
 from app.rate_limit import limiter
 
 router = APIRouter()
 
 
-@router.get("/api/studies", response_model=List[StudyResponse])
+@router.get("/api/studies")
 @limiter.limit("30/minute")
-async def get_all_studies(
+def get_all_studies(
     request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Récupérer toutes les études, triées par date de création décroissante.
-    Supporte la pagination via skip/limit.
+    Supporte la pagination via page/per_page.
     """
-    studies = db.execute(
-        select(Study).order_by(Study.created_at.desc()).offset(skip).limit(limit)
-    ).scalars().all()
-    return studies
+    stmt = select(Study).where(Study.deleted_at.is_(None)).order_by(Study.created_at.desc())
+    return paginate(db, stmt, pagination)
 
 
 @router.get("/api/studies/active", response_model=List[StudyResponse])
 @limiter.limit("30/minute")
-async def get_active_studies(request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_active_studies(request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Récupérer les études actives (is_active=True) pour le site public.
     """
@@ -61,7 +59,7 @@ async def get_active_studies(request: Request, db: Session = Depends(get_db), cu
 
     studies = db.execute(
         select(Study)
-        .where(Study.is_active.is_(True))
+        .where(Study.is_active.is_(True), Study.deleted_at.is_(None))
         .order_by(Study.created_at.desc())
     ).scalars().all()
 
@@ -72,7 +70,7 @@ async def get_active_studies(request: Request, db: Session = Depends(get_db), cu
 
 @router.get("/api/studies/{study_id}", response_model=StudyResponse)
 @limiter.limit("30/minute")
-async def get_study(request: Request, study_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_study(request: Request, study_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Récupérer une étude par son ID.
     """
@@ -86,7 +84,7 @@ async def get_study(request: Request, study_id: int, db: Session = Depends(get_d
 
 @router.post("/api/studies", response_model=StudyResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_study(
+def create_study(
     data: StudyCreate,
     request: Request,
     db: Session = Depends(get_db),
@@ -140,7 +138,7 @@ async def create_study(
 
 @router.put("/api/studies/{study_id}", response_model=StudyResponse)
 @limiter.limit("10/minute")
-async def update_study(
+def update_study(
     study_id: int,
     data: StudyUpdate,
     request: Request,
@@ -189,7 +187,7 @@ async def update_study(
 
 @router.delete("/api/studies/{study_id}")
 @limiter.limit("5/minute")
-async def delete_study(
+def delete_study(
     study_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -222,7 +220,14 @@ async def delete_study(
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
-    db.delete(study)
+    # Soft-delete the study and cascade to related insights/reports
+    study.soft_delete()
+    for insight in study.insights:
+        if not insight.is_deleted:
+            insight.soft_delete()
+    for report in study.reports:
+        if not report.is_deleted:
+            report.soft_delete()
     db.commit()
 
     # Invalidate studies cache on mutation
@@ -295,7 +300,7 @@ async def import_study_data(
 ):
     """
     Importer des données CSV/Excel pour créer une nouvelle étude.
-    Les données sont stockées en JSONB dans le champ imported_data de l'étude.
+    Les données sont stockées dans la table study_datasets (séparée de studies).
     """
     if not check_admin_permission(current_user, "studies"):
         raise HTTPException(
@@ -322,16 +327,20 @@ async def import_study_data(
             detail="Aucune donnée importée. Le fichier est vide ou invalide.",
         )
 
+    # Create study metadata (without the heavy dataset payload)
     new_study = Study(
         title=title,
         description=description if description else None,
         category=category,
         status="Ouvert",
         is_active=True,
-        imported_data=result.data,
-        imported_columns=result.columns,
-        imported_row_count=result.imported_rows,
-        import_source=file.filename,
+    )
+    # Attach dataset in a separate table via relationship
+    new_study.dataset = StudyDataset(
+        data=result.data,
+        columns=result.columns,
+        row_count=result.imported_rows,
+        source_filename=file.filename,
     )
 
     db.add(new_study)

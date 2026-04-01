@@ -1,9 +1,12 @@
 """
-Schemas Pydantic pour le module Blog.
+Schemas Pydantic v2 pour le module Blog.
 """
 from datetime import datetime
-from typing import Optional, List
-from pydantic import BaseModel, Field, validator
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.enums import BlogPostStatus
 
 
 class BlogPostCreate(BaseModel):
@@ -14,21 +17,15 @@ class BlogPostCreate(BaseModel):
     featured_image: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = []
-    status: Optional[str] = Field("draft", max_length=20)
+    status: Optional[BlogPostStatus] = "draft"
     scheduled_at: Optional[datetime] = None
     meta_title: Optional[str] = Field(None, max_length=200)
     meta_description: Optional[str] = Field(None, max_length=500)
     og_image: Optional[str] = Field(None, max_length=2000)
 
-    @validator('status')
-    def validate_status(cls, v):
-        allowed = ['draft', 'published', 'scheduled']
-        if v not in allowed:
-            raise ValueError(f'Status must be one of: {allowed}')
-        return v
-
-    @validator('tags', pre=True)
-    def validate_tags(cls, v):
+    @field_validator("tags", mode="before")
+    @classmethod
+    def validate_tags(cls, v: object) -> list:
         if isinstance(v, list):
             return v
         return v if v else []
@@ -42,19 +39,11 @@ class BlogPostUpdate(BaseModel):
     featured_image: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = None
-    status: Optional[str] = Field(None, max_length=20)
+    status: Optional[BlogPostStatus] = None
     scheduled_at: Optional[datetime] = None
     meta_title: Optional[str] = Field(None, max_length=200)
     meta_description: Optional[str] = Field(None, max_length=500)
     og_image: Optional[str] = Field(None, max_length=2000)
-
-    @validator('status')
-    def validate_status(cls, v):
-        if v is not None:
-            allowed = ['draft', 'published', 'scheduled']
-            if v not in allowed:
-                raise ValueError(f'Status must be one of: {allowed}')
-        return v
 
 
 class BlogPostResponse(BaseModel):
@@ -68,7 +57,7 @@ class BlogPostResponse(BaseModel):
     tags: Optional[List[str]]
     author_id: int
     author_name: Optional[str] = None
-    status: str
+    status: BlogPostStatus
     published_at: Optional[datetime]
     scheduled_at: Optional[datetime]
     meta_title: Optional[str]
@@ -79,11 +68,11 @@ class BlogPostResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-    @validator('tags', pre=True)
-    def parse_tags(cls, v):
+    @field_validator("tags", mode="before")
+    @classmethod
+    def parse_tags(cls, v: object) -> list:
         if isinstance(v, list):
             return v
         return v if v else []
@@ -107,11 +96,11 @@ class BlogPostPublic(BaseModel):
     reading_time: Optional[int]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-    @validator('tags', pre=True)
-    def parse_tags(cls, v):
+    @field_validator("tags", mode="before")
+    @classmethod
+    def parse_tags(cls, v: object) -> list:
         if isinstance(v, list):
             return v
         return v if v else []
@@ -148,8 +137,7 @@ class PopularPostResponse(BaseModel):
     views: int
     published_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SearchResponse(BaseModel):

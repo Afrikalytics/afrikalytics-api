@@ -4,18 +4,20 @@ Router pour la gestion administrative des utilisateurs.
 """
 import logging
 import secrets
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from database import get_db
-from models import User, Subscription, AuditLog
-from auth import hash_password
+from app.database import get_db
+from app.models import User, Subscription, AuditLog
+from app.auth import hash_password
+from app.utils import validate_password
 from app.dependencies import get_current_user
+from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission, ADMIN_ROLES
 from app.services.email import send_email
 from app.services.email_templates import admin_user_created_email
@@ -29,7 +31,7 @@ router = APIRouter()
 
 @router.get("/api/admin/roles")
 @limiter.limit("20/minute")
-async def get_admin_roles(
+def get_admin_roles(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
@@ -52,18 +54,17 @@ async def get_admin_roles(
     }
 
 
-@router.get("/api/admin/users", response_model=List[AdminUserResponse])
+@router.get("/api/admin/users")
 @limiter.limit("20/minute")
-async def get_all_users(
+def get_all_users(
     request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    pagination: PaginationParams = Depends(),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Récupérer tous les utilisateurs (Admin avec permission users).
-    Supporte la pagination via skip/limit.
+    Supporte la pagination via page/per_page.
     """
     if not check_admin_permission(current_user, "users"):
         raise HTTPException(
@@ -71,15 +72,13 @@ async def get_all_users(
             detail="Vous n'avez pas la permission de gérer les utilisateurs",
         )
 
-    users = db.execute(
-        select(User).order_by(User.created_at.desc()).offset(skip).limit(limit)
-    ).scalars().all()
-    return users
+    stmt = select(User).order_by(User.created_at.desc())
+    return paginate(db, stmt, pagination)
 
 
 @router.get("/api/admin/users/{user_id}", response_model=AdminUserResponse)
 @limiter.limit("20/minute")
-async def get_user_by_id(
+def get_user_by_id(
     request: Request,
     user_id: int,
     db: Session = Depends(get_db),
@@ -105,7 +104,7 @@ async def get_user_by_id(
 
 @router.post("/api/admin/users", response_model=AdminUserResponse, status_code=201)
 @limiter.limit("10/minute")
-async def create_user_admin(
+def create_user_admin(
     data: AdminUserCreate,
     request: Request,
     db: Session = Depends(get_db),
@@ -175,7 +174,7 @@ async def create_user_admin(
 
 @router.put("/api/admin/users/{user_id}", response_model=AdminUserResponse)
 @limiter.limit("10/minute")
-async def update_user_admin(
+def update_user_admin(
     user_id: int,
     data: AdminUserUpdate,
     request: Request,
@@ -232,7 +231,10 @@ async def update_user_admin(
         user.admin_role = data.admin_role
         user.is_admin = True  # Activer admin si un rôle est défini
 
-    if data.new_password is not None and len(data.new_password) >= 8:
+    if data.new_password is not None:
+        is_valid, err = validate_password(data.new_password)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=err)
         user.hashed_password = hash_password(data.new_password)
 
     db.commit()
@@ -253,7 +255,7 @@ async def update_user_admin(
 
 @router.delete("/api/admin/users/{user_id}")
 @limiter.limit("5/minute")
-async def delete_user_admin(
+def delete_user_admin(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -306,7 +308,7 @@ async def delete_user_admin(
 
 @router.put("/api/admin/users/{user_id}/toggle-active")
 @limiter.limit("10/minute")
-async def toggle_user_active(
+def toggle_user_active(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -341,20 +343,23 @@ async def toggle_user_active(
     return {"message": f"Utilisateur {status}", "is_active": user.is_active}
 
 
-@router.get("/api/admin/audit-log", response_model=AuditLogListResponse)
+@router.get("/api/admin/audit-log")
 @limiter.limit("20/minute")
-async def get_audit_logs(
+def get_audit_logs(
     request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    pagination: PaginationParams = Depends(),
     action: Optional[str] = None,
     resource_type: Optional[str] = None,
+    last_id: Optional[int] = None,
+    per_page: int = Query(20, ge=1, le=100, description="Items per page (cursor mode)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Recuperer les logs d'audit (Super Admin ou Admin avec permission users).
-    Supporte la pagination via skip/limit et le filtrage par action/resource_type.
+    Supporte la pagination via page/per_page (offset) et le filtrage par action/resource_type.
+    Pass last_id for cursor-based pagination (more efficient for large datasets).
+    When last_id is provided, offset pagination is bypassed in favor of cursor mode.
     """
     if not check_admin_permission(current_user, "users"):
         raise HTTPException(
@@ -369,23 +374,40 @@ async def get_audit_logs(
     if resource_type:
         stmt = stmt.where(AuditLog.resource_type == resource_type)
 
-    # Count total matching records
-    count_stmt = select(func.count()).select_from(AuditLog).join(User, AuditLog.user_id == User.id)
-    if action:
-        count_stmt = count_stmt.where(AuditLog.action == action)
-    if resource_type:
-        count_stmt = count_stmt.where(AuditLog.resource_type == resource_type)
-    total = db.execute(count_stmt).scalar()
+    # Cursor-based pagination: when last_id is provided, fetch rows with id < last_id
+    if last_id is not None:
+        stmt = stmt.where(AuditLog.id < last_id)
+        stmt = stmt.order_by(AuditLog.id.desc()).limit(per_page)
 
-    logs = db.execute(
-        stmt
-        .order_by(AuditLog.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    ).scalars().all()
+        items_raw = db.execute(stmt).scalars().all()
+
+        items = []
+        for log in items_raw:
+            items.append(AuditLogResponse(
+                id=log.id,
+                user_id=log.user_id,
+                user_email=log.user.email if log.user else None,
+                action=log.action,
+                resource_type=log.resource_type,
+                resource_id=log.resource_id,
+                details=log.details,
+                ip_address=log.ip_address,
+                created_at=log.created_at,
+            ))
+
+        next_last_id = items[-1].id if items else None
+        return {
+            "items": items,
+            "next_last_id": next_last_id,
+            "per_page": per_page,
+        }
+
+    # Default: offset-based pagination (backward compatible)
+    stmt = stmt.order_by(AuditLog.created_at.desc())
+    result = paginate(db, stmt, pagination)
 
     items = []
-    for log in logs:
+    for log in result["items"]:
         items.append(AuditLogResponse(
             id=log.id,
             user_id=log.user_id,
@@ -398,4 +420,92 @@ async def get_audit_logs(
             created_at=log.created_at,
         ))
 
-    return AuditLogListResponse(items=items, total=total)
+    result["items"] = items
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Cleanup endpoint — purge expired ephemeral rows
+# ---------------------------------------------------------------------------
+
+@router.post("/api/admin/cleanup")
+@limiter.limit("5/minute")
+def run_cleanup(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Purger les lignes expirées des tables techniques.
+
+    Supprime les ``verification_codes``, ``token_blacklist`` et
+    ``sso_exchange_codes`` expirés/consommés pour contrôler la croissance
+    indéfinie de ces tables.
+
+    Peut aussi être déclenché par un CRON Railway en fournissant le header
+    ``X-Cron-Secret`` plutôt qu'un JWT (voir ``/api/admin/cleanup/cron``).
+
+    Accès : super_admin uniquement.
+    """
+    if not check_admin_permission(current_user, "users"):
+        raise HTTPException(
+            status_code=403,
+            detail="Seuls les super admins peuvent déclencher le nettoyage.",
+        )
+
+    from app.services.cleanup import run_cleanup as _run_cleanup
+
+    try:
+        result = _run_cleanup(db)
+    except Exception as exc:
+        logger.error("cleanup_failed error=%s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Erreur lors du nettoyage.") from exc
+
+    log_action(
+        db=db,
+        user_id=current_user.id,
+        action="cleanup",
+        resource_type="system",
+        details=dict(result),
+        request=request,
+    )
+
+    return {
+        "message": "Nettoyage terminé.",
+        "result": result,
+    }
+
+
+@router.post("/api/admin/cleanup/cron", include_in_schema=False)
+@limiter.limit("10/minute")
+def run_cleanup_cron(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Endpoint CRON pour le nettoyage automatique des tables techniques.
+
+    Protégé par le header ``X-Cron-Secret`` (valeur = ``CRON_SECRET`` env var).
+    Non exposé dans la documentation Swagger (``include_in_schema=False``).
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    cron_secret = request.headers.get("x-cron-secret", "")
+    if not cron_secret or not settings.cron_secret:
+        raise HTTPException(status_code=401, detail="Secret CRON manquant.")
+
+    import hmac
+    if not hmac.compare_digest(cron_secret, settings.cron_secret):
+        raise HTTPException(status_code=401, detail="Secret CRON invalide.")
+
+    from app.services.cleanup import run_cleanup as _run_cleanup
+
+    try:
+        result = _run_cleanup(db)
+    except Exception as exc:
+        logger.error("cron_cleanup_failed error=%s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Erreur lors du nettoyage CRON.") from exc
+
+    logger.info("cron_cleanup_complete result=%s", result)
+
+    return {"message": "Nettoyage CRON terminé.", "result": result}

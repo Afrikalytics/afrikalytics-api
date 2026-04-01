@@ -14,8 +14,9 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, JSON, Integer
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.dialects.postgresql import JSONB
 
 # Set test environment variables BEFORE importing app modules
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci")
@@ -25,6 +26,39 @@ from app.database import Base, get_db
 from main import app
 from app.auth import hash_password, create_access_token
 from app.models import User, Study, Insight, Report, BlogPost
+
+# ---------------------------------------------------------------------------
+# SQLite compatibility: map PostgreSQL JSONB -> JSON for test database
+# ---------------------------------------------------------------------------
+from sqlalchemy import event
+
+def _patch_pg_types_for_sqlite():
+    """
+    Replace PostgreSQL-specific column types and defaults for SQLite compat.
+    - JSONB -> JSON
+    - BigInteger primary keys -> Integer (SQLite autoincrement needs INTEGER)
+    - server_default containing '::jsonb' -> plain JSON literal
+    """
+    import re
+    from sqlalchemy import BigInteger as _BigInt
+    from sqlalchemy.sql import text
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            # JSONB -> JSON
+            if isinstance(column.type, JSONB):
+                column.type = JSON()
+            # BigInteger PK -> Integer (SQLite ROWID autoincrement)
+            if isinstance(column.type, _BigInt) and column.primary_key:
+                column.type = Integer()
+            # Fix PostgreSQL cast defaults
+            if column.server_default is not None:
+                default_text = str(column.server_default.arg) if hasattr(column.server_default, 'arg') else ""
+                if "::jsonb" in default_text:
+                    clean = re.sub(r"::jsonb", "", default_text).strip("'")
+                    column.server_default = text(f"'{clean}'")
+                elif "::json" in default_text:
+                    clean = re.sub(r"::json", "", default_text).strip("'")
+                    column.server_default = text(f"'{clean}'")
 
 # ---------------------------------------------------------------------------
 # Shared test passwords (not real credentials — used only in test fixtures)
@@ -46,12 +80,27 @@ engine = create_engine(
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+_pg_types_patched = False
+
 @pytest.fixture(autouse=True)
 def setup_database():
-    """Create all tables before each test, drop after."""
+    """Create all tables before each test, drop after. Reset rate limiter."""
+    global _pg_types_patched
+    if not _pg_types_patched:
+        _patch_pg_types_for_sqlite()
+        _pg_types_patched = True
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def disable_rate_limiting():
+    """Disable SlowAPI rate limiting in tests to prevent cross-test 429 errors."""
+    from app.rate_limit import limiter
+    limiter.enabled = False
+    yield
+    limiter.enabled = True
 
 
 @pytest.fixture(autouse=True)
