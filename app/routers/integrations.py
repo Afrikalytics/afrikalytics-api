@@ -13,6 +13,7 @@ Security model
   compares it against ``key_hash`` using a constant-time comparison (via the
   ``app.security`` module) to prevent timing side-channel attacks.
 """
+import html as html_module
 import json
 import logging
 from datetime import datetime, timezone
@@ -403,6 +404,7 @@ def get_embed_widget(
 
 def _render_widget_html(study: Study, widget_type: str, theme: str) -> str:
     """Render a self-contained HTML page for iframe embedding with Chart.js."""
+    safe_title = html_module.escape(study.title)
     bg_color = "#ffffff" if theme == "light" else "#1f2937"
     text_color = "#111827" if theme == "light" else "#f9fafb"
     grid_color = "rgba(0,0,0,0.1)" if theme == "light" else "rgba(255,255,255,0.1)"
@@ -442,7 +444,7 @@ def _render_widget_html(study: Study, widget_type: str, theme: str) -> str:
             "responsive": True,
             "maintainAspectRatio": False,
             "plugins": {
-                "title": {"display": True, "text": study.title, "color": text_color},
+                "title": {"display": True, "text": safe_title, "color": text_color},
                 "legend": {"labels": {"color": text_color}},
             },
             "scales": {} if js_chart_type in ("pie", "doughnut", "radar") else {
@@ -463,7 +465,7 @@ def _render_widget_html(study: Study, widget_type: str, theme: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{study.title} — Afrikalytics Widget</title>
+<title>{safe_title} — Afrikalytics Widget</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}

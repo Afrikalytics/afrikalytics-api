@@ -6,15 +6,16 @@ import logging
 import secrets
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from database import get_db
-from models import User, Subscription, AuditLog
-from auth import hash_password
+from app.database import get_db
+from app.models import User, Subscription, AuditLog
+from app.auth import hash_password
+from app.utils import validate_password
 from app.dependencies import get_current_user
 from app.pagination import PaginationParams, paginate
 from app.permissions import check_admin_permission, ADMIN_ROLES
@@ -230,7 +231,10 @@ def update_user_admin(
         user.admin_role = data.admin_role
         user.is_admin = True  # Activer admin si un rôle est défini
 
-    if data.new_password is not None and len(data.new_password) >= 8:
+    if data.new_password is not None:
+        is_valid, err = validate_password(data.new_password)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=err)
         user.hashed_password = hash_password(data.new_password)
 
     db.commit()
@@ -346,12 +350,16 @@ def get_audit_logs(
     pagination: PaginationParams = Depends(),
     action: Optional[str] = None,
     resource_type: Optional[str] = None,
+    last_id: Optional[int] = None,
+    per_page: int = Query(20, ge=1, le=100, description="Items per page (cursor mode)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Recuperer les logs d'audit (Super Admin ou Admin avec permission users).
-    Supporte la pagination via page/per_page et le filtrage par action/resource_type.
+    Supporte la pagination via page/per_page (offset) et le filtrage par action/resource_type.
+    Pass last_id for cursor-based pagination (more efficient for large datasets).
+    When last_id is provided, offset pagination is bypassed in favor of cursor mode.
     """
     if not check_admin_permission(current_user, "users"):
         raise HTTPException(
@@ -366,10 +374,38 @@ def get_audit_logs(
     if resource_type:
         stmt = stmt.where(AuditLog.resource_type == resource_type)
 
+    # Cursor-based pagination: when last_id is provided, fetch rows with id < last_id
+    if last_id is not None:
+        stmt = stmt.where(AuditLog.id < last_id)
+        stmt = stmt.order_by(AuditLog.id.desc()).limit(per_page)
+
+        items_raw = db.execute(stmt).scalars().all()
+
+        items = []
+        for log in items_raw:
+            items.append(AuditLogResponse(
+                id=log.id,
+                user_id=log.user_id,
+                user_email=log.user.email if log.user else None,
+                action=log.action,
+                resource_type=log.resource_type,
+                resource_id=log.resource_id,
+                details=log.details,
+                ip_address=log.ip_address,
+                created_at=log.created_at,
+            ))
+
+        next_last_id = items[-1].id if items else None
+        return {
+            "items": items,
+            "next_last_id": next_last_id,
+            "per_page": per_page,
+        }
+
+    # Default: offset-based pagination (backward compatible)
     stmt = stmt.order_by(AuditLog.created_at.desc())
     result = paginate(db, stmt, pagination)
 
-    # Transform items to include user_email
     items = []
     for log in result["items"]:
         items.append(AuditLogResponse(

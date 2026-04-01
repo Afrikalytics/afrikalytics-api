@@ -24,7 +24,9 @@ uvicorn main:app --reload --port 8000
 # http://localhost:8000/redoc      (ReDoc)
 ```
 
-Pas de framework de test configure. Pas de linter configure. CI/CD a configurer.
+**Tests:** pytest + coverage configured in `pyproject.toml`. Run: `pytest` (requires active venv). Coverage target: 70% (current ~10%). Threshold enforced at 30% (`--cov-fail-under=30`).
+**Linter:** ruff (rules E,W,F,I,B,S,UP,SIM,N) + mypy configured in `pyproject.toml`. Run: `ruff check .` / `mypy app/`.
+**CI/CD:** GitHub Actions workflows in `.github/workflows/` — `ci.yml` runs lint+test on push to main/develop.
 
 ## Architecture
 
