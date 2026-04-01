@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session, joinedload
 
 logger = logging.getLogger(__name__)
 
-from database import get_db
-from models import BlogPost, User
+from app.database import get_db
+from app.models import BlogPost, User
 from app.utils import generate_slug, ensure_unique_slug
 from app.dependencies import get_current_user
 from app.permissions import check_blog_permission, get_paginated_results_stmt
@@ -44,8 +44,6 @@ def create_blog_post(
         slug = data.slug
     slug = ensure_unique_slug(db, slug)
 
-    tags_json = json.dumps(data.tags) if data.tags else None
-
     new_post = BlogPost(
         title=data.title,
         slug=slug,
@@ -53,7 +51,7 @@ def create_blog_post(
         content=data.content,
         featured_image=data.featured_image,
         category=data.category,
-        tags=tags_json,
+        tags=data.tags if data.tags else None,
         author_id=current_user.id,
         status=data.status,
         scheduled_at=data.scheduled_at,
@@ -178,7 +176,7 @@ def update_blog_post(
         update_data["slug"] = ensure_unique_slug(db, update_data["slug"], post_id)
 
     if "tags" in update_data:
-        update_data["tags"] = json.dumps(update_data["tags"]) if update_data["tags"] else None
+        update_data["tags"] = update_data["tags"] if update_data["tags"] else None
 
     if "status" in update_data and update_data["status"] == "published" and not post.published_at:
         update_data["published_at"] = datetime.now(timezone.utc)
@@ -235,7 +233,7 @@ def delete_blog_post(
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
-    db.delete(post)
+    post.soft_delete()
     db.commit()
 
     # Invalidate public blog cache on mutation

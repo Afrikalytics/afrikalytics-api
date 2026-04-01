@@ -23,7 +23,7 @@ from app.services.cache import cache_get, cache_set, cache_delete_pattern
 from app.services.import_service import (
     validate_file,
     parse_file,
-    ImportError as FileImportError,
+    FileImportError,
 )
 from app.rate_limit import limiter
 
@@ -42,7 +42,7 @@ def get_all_studies(
     Récupérer toutes les études, triées par date de création décroissante.
     Supporte la pagination via page/per_page.
     """
-    stmt = select(Study).order_by(Study.created_at.desc())
+    stmt = select(Study).where(Study.deleted_at.is_(None)).order_by(Study.created_at.desc())
     return paginate(db, stmt, pagination)
 
 
@@ -59,7 +59,7 @@ def get_active_studies(request: Request, db: Session = Depends(get_db), current_
 
     studies = db.execute(
         select(Study)
-        .where(Study.is_active.is_(True))
+        .where(Study.is_active.is_(True), Study.deleted_at.is_(None))
         .order_by(Study.created_at.desc())
     ).scalars().all()
 
@@ -220,7 +220,14 @@ def delete_study(
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
-    db.delete(study)
+    # Soft-delete the study and cascade to related insights/reports
+    study.soft_delete()
+    for insight in study.insights:
+        if not insight.is_deleted:
+            insight.soft_delete()
+    for report in study.reports:
+        if not report.is_deleted:
+            report.soft_delete()
     db.commit()
 
     # Invalidate studies cache on mutation

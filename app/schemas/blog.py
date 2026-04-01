@@ -6,6 +6,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.enums import BlogPostStatus
+
 
 class BlogPostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
@@ -15,19 +17,11 @@ class BlogPostCreate(BaseModel):
     featured_image: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = []
-    status: Optional[str] = Field("draft", max_length=20)
+    status: Optional[BlogPostStatus] = "draft"
     scheduled_at: Optional[datetime] = None
     meta_title: Optional[str] = Field(None, max_length=200)
     meta_description: Optional[str] = Field(None, max_length=500)
     og_image: Optional[str] = Field(None, max_length=2000)
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v: str | None) -> str | None:
-        allowed = ["draft", "published", "scheduled"]
-        if v is not None and v not in allowed:
-            raise ValueError(f"Status must be one of: {allowed}")
-        return v
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -45,20 +39,11 @@ class BlogPostUpdate(BaseModel):
     featured_image: Optional[str] = Field(None, max_length=2000)
     category: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = None
-    status: Optional[str] = Field(None, max_length=20)
+    status: Optional[BlogPostStatus] = None
     scheduled_at: Optional[datetime] = None
     meta_title: Optional[str] = Field(None, max_length=200)
     meta_description: Optional[str] = Field(None, max_length=500)
     og_image: Optional[str] = Field(None, max_length=2000)
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v: str | None) -> str | None:
-        if v is not None:
-            allowed = ["draft", "published", "scheduled"]
-            if v not in allowed:
-                raise ValueError(f"Status must be one of: {allowed}")
-        return v
 
 
 class BlogPostResponse(BaseModel):
@@ -72,7 +57,7 @@ class BlogPostResponse(BaseModel):
     tags: Optional[List[str]]
     author_id: int
     author_name: Optional[str] = None
-    status: str
+    status: BlogPostStatus
     published_at: Optional[datetime]
     scheduled_at: Optional[datetime]
     meta_title: Optional[str]

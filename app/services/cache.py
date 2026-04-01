@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from typing import Optional
 
 import redis
@@ -11,25 +12,52 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 _redis_client: Optional[redis.Redis] = None
+_last_connect_attempt: float = 0.0
+_RETRY_INTERVAL_SECONDS: float = 30.0
 
 
 def get_redis() -> Optional[redis.Redis]:
-    """Get Redis connection (lazy init, returns None if unavailable)."""
-    global _redis_client
-    if _redis_client is None:
-        try:
-            settings = get_settings()
-            _redis_client = redis.from_url(
-                settings.redis_url,
-                decode_responses=True,
-                socket_timeout=2,
-                socket_connect_timeout=2,
-            )
-            _redis_client.ping()
-        except Exception as e:
-            logger.warning(f"Redis unavailable, caching disabled: {e}")
-            _redis_client = None
+    """Get Redis connection (lazy init, retries every 30s if unavailable)."""
+    global _redis_client, _last_connect_attempt
+
+    if _redis_client is not None:
+        return _redis_client
+
+    now = time.monotonic()
+    if now - _last_connect_attempt < _RETRY_INTERVAL_SECONDS:
+        return None
+
+    _last_connect_attempt = now
+    try:
+        settings = get_settings()
+        client = redis.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_timeout=2,
+            socket_connect_timeout=2,
+        )
+        client.ping()
+        _redis_client = client
+        logger.info("Redis connected successfully")
+    except Exception as e:
+        logger.warning("Redis unavailable, caching disabled: %s", e)
+        _redis_client = None
     return _redis_client
+
+
+def redis_health() -> dict:
+    """Return Redis health status for the /health endpoint."""
+    client = get_redis()
+    if client is None:
+        return {"status": "disconnected", "message": "Redis not available"}
+    try:
+        client.ping()
+        return {"status": "connected"}
+    except Exception as e:
+        # Connection lost — reset so next get_redis() retries
+        global _redis_client
+        _redis_client = None
+        return {"status": "error", "message": str(e)}
 
 
 def cache_get(key: str) -> Optional[dict]:

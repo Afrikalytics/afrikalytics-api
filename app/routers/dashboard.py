@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import User, Study, Subscription, Report, Insight
+from app.models import User, Study, Subscription, Report, Insight, DashboardLayout
 from app.dependencies import get_current_user
 from app.services.email import send_email
 from app.services.email_templates import (
@@ -25,6 +25,7 @@ from app.services.email_templates import (
 from app.utils import calculate_days_remaining
 from app.services.cache import cache_get, cache_set
 from app.rate_limit import limiter
+from app.schemas.dashboard import LayoutCreate, LayoutUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -283,3 +284,136 @@ def get_my_subscription(
         "end_date": subscription.end_date.isoformat() if subscription.end_date else None,
         "days_remaining": days_remaining,
     }
+
+
+# ==================== DASHBOARD LAYOUTS ====================
+
+
+@router.get("/api/dashboard/layouts")
+@limiter.limit("30/minute")
+def list_layouts(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all saved dashboard layouts for the current user."""
+    layouts = db.execute(
+        select(DashboardLayout)
+        .where(DashboardLayout.user_id == current_user.id)
+        .order_by(DashboardLayout.updated_at.desc())
+    ).scalars().all()
+
+    return [
+        {
+            "id": l.id,
+            "name": l.name,
+            "description": l.description,
+            "is_template": l.is_template,
+            "widget_count": len(l.layout.get("widgets", [])) if isinstance(l.layout, dict) else 0,
+            "created_at": l.created_at,
+            "updated_at": l.updated_at,
+        }
+        for l in layouts
+    ]
+
+
+@router.get("/api/dashboard/layouts/{layout_id}")
+@limiter.limit("30/minute")
+def get_layout(
+    request: Request,
+    layout_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Load a specific saved dashboard layout."""
+    layout = db.execute(
+        select(DashboardLayout).where(
+            DashboardLayout.id == layout_id,
+            DashboardLayout.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not layout:
+        raise HTTPException(status_code=404, detail="Layout non trouvé")
+
+    return {
+        "id": layout.id,
+        "name": layout.name,
+        "description": layout.description,
+        "layout": layout.layout,
+        "is_template": layout.is_template,
+        "created_at": layout.created_at,
+        "updated_at": layout.updated_at,
+    }
+
+
+@router.post("/api/dashboard/layouts", status_code=201)
+@limiter.limit("10/minute")
+def create_layout(
+    request: Request,
+    data: LayoutCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Save a new dashboard layout."""
+    layout = DashboardLayout(
+        user_id=current_user.id,
+        name=data.name,
+        description=data.description,
+        layout=data.layout,
+    )
+    db.add(layout)
+    db.commit()
+    db.refresh(layout)
+    return {"id": layout.id, "name": layout.name, "message": "Layout sauvegardé"}
+
+
+@router.put("/api/dashboard/layouts/{layout_id}")
+@limiter.limit("10/minute")
+def update_layout(
+    request: Request,
+    layout_id: int,
+    data: LayoutUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update an existing dashboard layout."""
+    layout = db.execute(
+        select(DashboardLayout).where(
+            DashboardLayout.id == layout_id,
+            DashboardLayout.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not layout:
+        raise HTTPException(status_code=404, detail="Layout non trouvé")
+
+    if data.name is not None:
+        layout.name = data.name
+    if data.description is not None:
+        layout.description = data.description
+    if data.layout is not None:
+        layout.layout = data.layout
+    db.commit()
+    return {"id": layout.id, "message": "Layout mis à jour"}
+
+
+@router.delete("/api/dashboard/layouts/{layout_id}")
+@limiter.limit("10/minute")
+def delete_layout(
+    request: Request,
+    layout_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a saved dashboard layout."""
+    layout = db.execute(
+        select(DashboardLayout).where(
+            DashboardLayout.id == layout_id,
+            DashboardLayout.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not layout:
+        raise HTTPException(status_code=404, detail="Layout non trouvé")
+
+    db.delete(layout)
+    db.commit()
+    return {"message": "Layout supprimé"}

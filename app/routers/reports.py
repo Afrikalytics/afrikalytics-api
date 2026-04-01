@@ -28,7 +28,7 @@ def get_all_reports(
 ):
     stmt = (
         select(Report)
-        .where(Report.is_available.is_(True))
+        .where(Report.is_available.is_(True), Report.deleted_at.is_(None))
         .order_by(Report.created_at.desc())
     )
     return paginate(db, stmt, pagination)
@@ -39,7 +39,7 @@ def get_all_reports(
 def get_report_by_study(request: Request, study_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     report = db.execute(
         select(Report)
-        .where(Report.study_id == study_id, Report.is_available.is_(True))
+        .where(Report.study_id == study_id, Report.is_available.is_(True), Report.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
@@ -58,6 +58,7 @@ def get_report_by_study_and_type(
             Report.study_id == study_id,
             Report.report_type == report_type,
             Report.is_available.is_(True),
+            Report.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
     if not report:
@@ -70,7 +71,7 @@ def get_report_by_study_and_type(
 @limiter.limit("30/minute")
 def get_report(request: Request, report_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     report = db.execute(
-        select(Report).where(Report.id == report_id)
+        select(Report).where(Report.id == report_id, Report.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not report:
         raise HTTPException(status_code=404, detail="Rapport non trouvé")
@@ -198,7 +199,7 @@ def delete_report(
                 study.report_url_basic = None
                 study.report_url_premium = None
 
-    db.delete(report)
+    report.soft_delete()
     db.commit()
     return {"message": "Rapport supprimé avec succès"}
 

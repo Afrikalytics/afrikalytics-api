@@ -1,4 +1,3 @@
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -29,7 +28,7 @@ def convert_insight_images(insight):
         "key_findings": insight.key_findings,
         "recommendations": insight.recommendations,
         "author": insight.author,
-        "images": json.loads(insight.images) if insight.images else [],
+        "images": insight.images if insight.images else [],
         "is_published": insight.is_published,
         "created_at": insight.created_at,
     }
@@ -43,7 +42,7 @@ def get_all_insights(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    stmt = select(Insight).where(Insight.is_published.is_(True))
+    stmt = select(Insight).where(Insight.is_published.is_(True), Insight.deleted_at.is_(None))
     result = paginate(db, stmt, pagination)
     result["items"] = [convert_insight_images(i) for i in result["items"]]
     return result
@@ -54,7 +53,7 @@ def get_all_insights(
 def get_insight_by_study(request: Request, study_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     insight = db.execute(
         select(Insight)
-        .where(Insight.study_id == study_id, Insight.is_published.is_(True))
+        .where(Insight.study_id == study_id, Insight.is_published.is_(True), Insight.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight not found")
@@ -65,7 +64,7 @@ def get_insight_by_study(request: Request, study_id: int, db: Session = Depends(
 @limiter.limit("30/minute")
 def get_insight(request: Request, insight_id: int, db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     insight = db.execute(
-        select(Insight).where(Insight.id == insight_id)
+        select(Insight).where(Insight.id == insight_id, Insight.deleted_at.is_(None))
     ).scalar_one_or_none()
     if not insight:
         raise HTTPException(status_code=404, detail="Insight not found")
@@ -92,7 +91,7 @@ def create_insight(
         key_findings=data.key_findings,
         recommendations=data.recommendations,
         author=data.author,
-        images=json.dumps(data.images) if data.images else None,
+        images=data.images if data.images else None,
         is_published=data.is_published,
     )
     db.add(insight)
@@ -132,7 +131,7 @@ def update_insight(
 
     update_data = data.model_dump(exclude_unset=True)
     if "images" in update_data:
-        update_data["images"] = json.dumps(update_data["images"]) if update_data["images"] else None
+        update_data["images"] = update_data["images"] if update_data["images"] else None
     for key, value in update_data.items():
         setattr(insight, key, value)
 
@@ -181,6 +180,6 @@ def delete_insight(
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
-    db.delete(insight)
+    insight.soft_delete()
     db.commit()
     return {"message": "Insight deleted successfully"}

@@ -2,17 +2,17 @@
 Schemas Pydantic pour le module Paiements (PayDunya).
 """
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
-PlanType = Literal["basic", "professionnel", "entreprise"]
+from app.schemas.enums import PaymentStatus, UserPlan
 
 
 class PaymentCreate(BaseModel):
     email: EmailStr
     name: str
-    plan: PlanType = "professionnel"
+    plan: UserPlan = "professionnel"
 
 
 class PaymentResponse(BaseModel):
@@ -22,8 +22,8 @@ class PaymentResponse(BaseModel):
     currency: str
     provider: str
     provider_ref: Optional[str]
-    plan: str
-    status: str
+    plan: UserPlan
+    status: PaymentStatus
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -38,8 +38,8 @@ class PaymentHistoryItem(BaseModel):
     id: int
     amount: float
     currency: str = "XOF"
-    status: str  # "completed", "pending", "failed"
-    plan: str
+    status: PaymentStatus
+    plan: UserPlan
     payment_method: str
     created_at: datetime
     reference: Optional[str] = None
@@ -67,7 +67,7 @@ class PlanFeatures(BaseModel):
 
 
 class CurrentPlanResponse(BaseModel):
-    plan: str
+    plan: UserPlan
     is_active: bool
     expires_at: Optional[datetime] = None
     features: dict

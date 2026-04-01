@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
+from app.schemas.enums import AdminRole, UserPlan
+
 
 class UserRegister(BaseModel):
     """Schema pour l'inscription d'un nouvel utilisateur."""
@@ -26,10 +28,10 @@ class UserResponse(BaseModel):
     id: int
     email: str
     full_name: str
-    plan: str
+    plan: UserPlan
     is_active: bool
     is_admin: bool = False
-    admin_role: Optional[str] = None
+    admin_role: Optional[AdminRole] = None
     parent_user_id: Optional[int] = None
     created_at: datetime
 
@@ -51,8 +53,9 @@ class RefreshTokenRequest(BaseModel):
 
 
 class RefreshTokenResponse(BaseModel):
-    """Schema de reponse apres rafraichissement de token."""
+    """Schema de reponse apres rafraichissement de token (with rotation)."""
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_at: str
 

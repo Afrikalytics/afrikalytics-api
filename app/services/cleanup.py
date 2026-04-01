@@ -24,7 +24,10 @@ from typing import TypedDict
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import SSOExchangeCode, TokenBlacklist, VerificationCode
+from app.models import AuditLog, SSOExchangeCode, TokenBlacklist, VerificationCode
+
+# Audit logs older than this are archived (deleted from main table)
+AUDIT_LOG_RETENTION_DAYS: int = 365
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class CleanupResult(TypedDict):
     verification_codes_deleted: int
     token_blacklist_deleted: int
     sso_exchange_codes_deleted: int
+    audit_logs_archived: int
     ran_at: str
 
 
@@ -96,6 +100,38 @@ def _delete_expired_sso_exchange_codes(db: Session) -> int:
     return deleted
 
 
+def _archive_old_audit_logs(db: Session) -> int:
+    """Delete audit log entries older than AUDIT_LOG_RETENTION_DAYS.
+
+    In production, these should ideally be exported to cold storage (S3/GCS)
+    before deletion. For now, we simply delete them to prevent unbounded growth.
+    Batched in chunks of 10,000 to avoid long-running transactions.
+    """
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=AUDIT_LOG_RETENTION_DAYS)
+    total_deleted = 0
+    batch_size = 10_000
+
+    while True:
+        # Find IDs to delete in batches
+        ids_to_delete = db.execute(
+            select(AuditLog.id).where(AuditLog.created_at < cutoff).limit(batch_size)
+        ).scalars().all()
+
+        if not ids_to_delete:
+            break
+
+        db.execute(delete(AuditLog).where(AuditLog.id.in_(ids_to_delete)))
+        total_deleted += len(ids_to_delete)
+
+        if len(ids_to_delete) < batch_size:
+            break
+
+    if total_deleted:
+        logger.info("cleanup: archived %d audit_logs older than %d days", total_deleted, AUDIT_LOG_RETENTION_DAYS)
+    return total_deleted
+
+
 # ---------------------------------------------------------------------------
 # Main cleanup function
 # ---------------------------------------------------------------------------
@@ -130,22 +166,25 @@ def run_cleanup(db: Session) -> CleanupResult:
     vc_deleted = _delete_expired_verification_codes(db)
     tb_deleted = _delete_expired_token_blacklist(db)
     sso_deleted = _delete_expired_sso_exchange_codes(db)
+    audit_archived = _archive_old_audit_logs(db)
 
     db.commit()
 
     ran_at = datetime.now(timezone.utc).isoformat()
 
     logger.info(
-        "cleanup_complete verification_codes=%d token_blacklist=%d sso_exchange_codes=%d",
+        "cleanup_complete verification_codes=%d token_blacklist=%d sso_exchange_codes=%d audit_logs=%d",
         vc_deleted,
         tb_deleted,
         sso_deleted,
+        audit_archived,
     )
 
     return CleanupResult(
         verification_codes_deleted=vc_deleted,
         token_blacklist_deleted=tb_deleted,
         sso_exchange_codes_deleted=sso_deleted,
+        audit_logs_archived=audit_archived,
         ran_at=ran_at,
     )
 

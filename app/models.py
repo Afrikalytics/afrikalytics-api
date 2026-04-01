@@ -33,6 +33,11 @@ class SoftDeleteMixin:
     def is_deleted(self):
         return self.deleted_at is not None
 
+    def soft_delete(self) -> None:
+        """Mark this record as deleted (set deleted_at to now)."""
+        from datetime import datetime, timezone
+        self.deleted_at = datetime.now(timezone.utc)
+
 
 # ================================================================
 # MODEL: User
@@ -585,12 +590,15 @@ class TokenBlacklist(Base):
     id = Column(BigInteger, primary_key=True, index=True)
     jti = Column(String(255), unique=True, nullable=False, index=True)
     # ondelete=CASCADE: purge blacklisted tokens when the user account is deleted
+    # nullable for family-level revocations not tied to a specific user
     user_id = Column(
         BigInteger,
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
+    # Refresh token rotation: family grouping for compromise detection
+    token_family = Column(String(255), nullable=True, index=True)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
 
     # Timestamps
@@ -777,6 +785,39 @@ class MarketplaceTemplate(Base):
 
     def __repr__(self):
         return f"<MarketplaceTemplate {self.name}>"
+
+
+# ================================================================
+# MODEL: DashboardLayout (user-saved dashboard configurations)
+# ================================================================
+
+class DashboardLayout(Base):
+    __tablename__ = "dashboard_layouts"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    user_id = Column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    layout = Column(JSONB, nullable=False)  # Full DashboardLayout JSON (widgets + positions)
+    is_template = Column(Boolean, nullable=False, server_default=text("false"))
+    template_category = Column(String(100), nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<DashboardLayout {self.name}>"
 
 
 # ================================================================

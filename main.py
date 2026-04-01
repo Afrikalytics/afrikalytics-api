@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 
 import sentry_sdk
@@ -26,9 +27,11 @@ from app.routers.reports import router as reports_router
 from app.routers.studies import router as studies_router
 from app.routers.integrations import router as integrations_router
 from app.routers.notifications import router as notifications_router
+from app.routers.exports import router as exports_router
 from app.routers.users import router as users_router
 from app.database import engine  # noqa: F401 — kept for potential direct usage
 from app.models import Base  # noqa: F401 — kept so models are registered
+from app.services.audit_events import register_audit_listeners
 
 settings = get_settings()
 is_prod = settings.environment == "production"
@@ -52,6 +55,9 @@ if settings.sentry_dsn:
 # Run: alembic upgrade head
 # For existing databases: alembic stamp head
 
+# Register automatic audit logging for CRUD operations
+register_audit_listeners()
+
 app = FastAPI(
     title="Afrikalytics API",
     description=(
@@ -70,6 +76,21 @@ app = FastAPI(
 # Rate limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# --- Request Correlation ID Middleware ---
+# Generates a unique ID per request for end-to-end tracing across logs and Sentry.
+# Accepts an incoming X-Request-ID header (from Vercel/Railway proxy) or generates one.
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    # Store on request.state so routers/services can access it
+    request.state.request_id = request_id
+    # Tag Sentry events with this request ID
+    sentry_sdk.set_tag("request_id", request_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 # --- Security Headers Middleware ---
@@ -215,6 +236,7 @@ app.include_router(payments_router)
 app.include_router(notifications_router)
 app.include_router(integrations_router)
 app.include_router(analytics_router)
+app.include_router(exports_router)
 
 
 # Routes racine
@@ -235,7 +257,17 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc)}
+    from app.services.cache import redis_health
+
+    redis_status = redis_health()
+    overall = "healthy" if redis_status["status"] == "connected" else "degraded"
+    return {
+        "status": overall,
+        "timestamp": datetime.now(timezone.utc),
+        "services": {
+            "redis": redis_status,
+        },
+    }
 
 
 if __name__ == "__main__":

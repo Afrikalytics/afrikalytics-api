@@ -3,17 +3,40 @@ Service de paiement PayDunya.
 
 Centralise la logique PayDunya (URL, headers, creation de facture, enregistrement
 de paiement) pour eliminer la duplication dans le router payments.
+
+Includes a circuit breaker pattern via tenacity:
+- Retries up to 3 times with exponential backoff on transient errors.
+- Raises after max retries so callers get a clear failure.
 """
 import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy.orm import Session
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 
 from app.config import get_settings
 from app.models import Payment, TokenBlacklist
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Circuit breaker decorator for PayDunya API calls
+# ---------------------------------------------------------------------------
+
+_paydunya_retry = retry(
+    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -109,6 +132,7 @@ def get_plan_duration(plan: str) -> timedelta:
 # Invoice creation
 # ---------------------------------------------------------------------------
 
+@_paydunya_retry
 async def create_paydunya_invoice_request(
     plan: str,
     email: str,
@@ -173,6 +197,7 @@ async def create_paydunya_invoice_request(
     return response.json()
 
 
+@_paydunya_retry
 async def verify_paydunya_invoice(token: str) -> dict:
     """
     Verify / confirm a PayDunya invoice by token. Returns the raw API response.
