@@ -56,17 +56,6 @@ def check_admin_permission(user, permission: str) -> bool:
     return ADMIN_ROLES[role].get(permission, False)
 
 
-def require_admin_permission(permission: str):
-    def check_permission(current_user: User):
-        if not check_admin_permission(current_user, permission):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Vous n'avez pas la permission de gérer les {permission}"
-            )
-        return current_user
-    return check_permission
-
-
 def check_blog_permission(current_user: User):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Permission refusée")
@@ -91,20 +80,6 @@ def check_content_access(user: User, content_type: str = None, report_type: str 
             detail="Votre plan ne permet pas d'accéder à ce contenu premium. Passez au plan Professionnel."
         )
     return True
-
-
-def get_paginated_results(query, page: int, per_page: int):
-    """Legacy pagination helper — works with db.query() style queries."""
-    total = query.count()
-    items = query.offset((page - 1) * per_page).limit(per_page).all()
-    total_pages = (total + per_page - 1) // per_page
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "total_pages": total_pages
-    }
 
 
 def get_paginated_results_stmt(db, stmt, page: int, per_page: int):

@@ -32,19 +32,22 @@ class TestRegister:
     def test_register_success(self, client):
         payload = {
             "email": "newuser@example.com",
-            "full_name": "New User",
+            "name": "New User",
             "password": "StrongPassword123!",
         }
         response = client.post("/api/auth/register", json=payload)
-        # Should succeed (200 or 201) and return a token or user info
-        assert response.status_code in (200, 201)
+        assert response.status_code == 201
         data = response.json()
-        assert "access_token" in data or "user" in data or "message" in data
+        assert "access_token" in data
+        assert "refresh_token" in data
+        assert data["token_type"] == "bearer"
+        assert data["user"]["email"] == "newuser@example.com"
+        assert data["user"]["full_name"] == "New User"
 
     def test_register_duplicate_email(self, client, test_user):
         payload = {
             "email": test_user.email,
-            "full_name": "Duplicate User",
+            "name": "Duplicate User",
             "password": "StrongPassword123!",
         }
         response = client.post("/api/auth/register", json=payload)

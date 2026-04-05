@@ -1,0 +1,92 @@
+[project]
+name = "afrikalytics-api"
+version = "0.1.0"
+description = "Afrikalytics SaaS BI API — FastAPI backend"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--cov=app",
+    "--cov=main",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+    "--cov-fail-under=30",
+]
+markers = [
+    "unit: Unit tests (fast, no external deps)",
+    "integration: Integration tests (DB, services)",
+    "e2e: End-to-end tests (full stack)",
+    "security: Security-focused tests",
+    "slow: Slow tests (>5s)",
+    "auth: Authentication/authorization tests",
+    "payments: Payment processing tests",
+    "admin: Admin RBAC tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::sqlalchemy.exc.SAWarning",
+]
+
+[tool.coverage.run]
+source = ["app", "main.py"]
+omit = [
+    "tests/*",
+    "venv/*",
+    "alembic/*",
+    "*.pyc",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+    "pass",
+    "except ImportError",
+]
+show_missing = true
+fail_under = 30
+precision = 1
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "S",    # flake8-bandit (security)
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "N",    # pep8-naming
+]
+ignore = [
+    "S101",  # assert used (OK in tests)
+    "S105",  # hardcoded passwords (OK in test fixtures)
+    "B008",  # function calls in default args (FastAPI Depends)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true

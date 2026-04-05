@@ -42,9 +42,11 @@ else
   echo "   Install with: pip install ruff"
 fi
 
-# Check for hardcoded secrets in staged files
+# Check for hardcoded secrets in staged files (skip test files)
 echo "🔒 Checking for hardcoded secrets..."
 for file in $STAGED_PY; do
+  # Skip test files — they legitimately contain test passwords/keys
+  case "$file" in tests/*|test_*) continue ;; esac
   # Check for hardcoded secret keys (not env var references)
   if git diff --cached -- "$file" | grep -E '^\+' | grep -vE '^\+\+\+' | grep -iE '(secret_key|api_key|password)\s*=\s*"[^"]{8,}"' | grep -vE '(os\.|environ|getenv)' >/dev/null 2>&1; then
     echo ""

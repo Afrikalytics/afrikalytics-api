@@ -43,25 +43,27 @@ def get_tenant_db(
     Variables are explicitly reset when the session is released to avoid
     leaking tenant context to the next request via pooled connections.
     """
+    is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
     try:
-        # Set tenant context for RLS policies (connection-scoped)
-        # Using parameterized text() to prevent SQL injection
-        db.execute(
-            text("SET app.current_user_id = :user_id"),
-            {"user_id": str(current_user.id)},
-        )
+        if is_pg:
+            # Set tenant context for RLS policies (connection-scoped)
+            # Using parameterized text() to prevent SQL injection
+            db.execute(
+                text("SET app.current_user_id = :user_id"),
+                {"user_id": str(current_user.id)},
+            )
 
-        role = current_user.admin_role if current_user.is_admin and current_user.admin_role else ""
-        db.execute(
-            text("SET app.current_user_role = :role"),
-            {"role": role},
-        )
+            role = current_user.admin_role if current_user.is_admin and current_user.admin_role else ""
+            db.execute(
+                text("SET app.current_user_role = :role"),
+                {"role": role},
+            )
 
-        logger.debug(
-            "Tenant context set: user_id=%s, role=%s",
-            current_user.id,
-            current_user.admin_role or "user",
-        )
+            logger.debug(
+                "Tenant context set: user_id=%s, role=%s",
+                current_user.id,
+                current_user.admin_role or "user",
+            )
 
         yield db
 
@@ -69,13 +71,14 @@ def get_tenant_db(
         db.rollback()
         raise
     finally:
-        # Reset tenant context to prevent leaking to the next request
-        # via pooled connections. RESET restores the parameter to its default.
-        try:
-            db.execute(text("RESET app.current_user_id"))
-            db.execute(text("RESET app.current_user_role"))
-        except Exception:
-            logger.warning("Failed to reset tenant context on connection", exc_info=True)
+        if is_pg:
+            # Reset tenant context to prevent leaking to the next request
+            # via pooled connections. RESET restores the parameter to its default.
+            try:
+                db.execute(text("RESET app.current_user_id"))
+                db.execute(text("RESET app.current_user_role"))
+            except Exception:
+                logger.warning("Failed to reset tenant context on connection", exc_info=True)
 
 
 def get_admin_tenant_db(
@@ -97,15 +100,17 @@ def get_admin_tenant_db(
             detail="Accès réservé aux administrateurs",
         )
 
+    is_pg = db.bind.dialect.name == "postgresql" if db.bind else False
     try:
-        db.execute(
-            text("SET app.current_user_id = :user_id"),
-            {"user_id": str(current_user.id)},
-        )
-        db.execute(
-            text("SET app.current_user_role = :role"),
-            {"role": current_user.admin_role or "super_admin"},
-        )
+        if is_pg:
+            db.execute(
+                text("SET app.current_user_id = :user_id"),
+                {"user_id": str(current_user.id)},
+            )
+            db.execute(
+                text("SET app.current_user_role = :role"),
+                {"role": current_user.admin_role or "super_admin"},
+            )
 
         yield db
 
@@ -113,9 +118,10 @@ def get_admin_tenant_db(
         db.rollback()
         raise
     finally:
-        # Reset tenant context to prevent leaking to the next request
-        try:
-            db.execute(text("RESET app.current_user_id"))
-            db.execute(text("RESET app.current_user_role"))
-        except Exception:
-            logger.warning("Failed to reset admin tenant context on connection", exc_info=True)
+        if is_pg:
+            # Reset tenant context to prevent leaking to the next request
+            try:
+                db.execute(text("RESET app.current_user_id"))
+                db.execute(text("RESET app.current_user_role"))
+            except Exception:
+                logger.warning("Failed to reset admin tenant context on connection", exc_info=True)

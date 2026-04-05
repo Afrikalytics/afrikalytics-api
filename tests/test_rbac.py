@@ -8,8 +8,12 @@ invalides/expires/blacklistes sont rejetes.
 import jwt
 from datetime import datetime, timedelta, timezone
 
-from app.auth import create_access_token, hash_password, SECRET_KEY, ALGORITHM
+from app.auth import create_access_token, hash_password, SECRET_KEY
 from app.models import User, Study, TokenBlacklist
+
+# Tests that manually forge tokens use HS256 (the fallback algorithm accepted by
+# decode_access_token) because the RS256 private key is intentionally not exported.
+_TEST_ALGORITHM = "HS256"
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +315,7 @@ class TestExpiredToken:
     """Un token expire doit etre rejete avec 401."""
 
     def test_expired_token_returns_401(self, client, test_user):
-        # Create a token that expired 1 hour ago
+        # Create a token that expired 1 hour ago (HS256 fallback path)
         expired_token = jwt.encode(
             {
                 "sub": test_user.email,
@@ -320,7 +324,7 @@ class TestExpiredToken:
                 "jti": "expired-jti-test",
             },
             SECRET_KEY,
-            algorithm=ALGORITHM,
+            algorithm=_TEST_ALGORITHM,
         )
         headers = {"Authorization": f"Bearer {expired_token}"}
         response = client.get("/api/studies", headers=headers)
@@ -335,7 +339,7 @@ class TestExpiredToken:
                 "jti": "expired-jti-test-2",
             },
             SECRET_KEY,
-            algorithm=ALGORITHM,
+            algorithm=_TEST_ALGORITHM,
         )
         headers = {"Authorization": f"Bearer {expired_token}"}
         response = client.get("/api/users/me", headers=headers)

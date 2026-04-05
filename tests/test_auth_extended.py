@@ -28,7 +28,7 @@ class TestRegisterErrors:
         """Registering with an existing email must be rejected."""
         payload = {
             "email": test_user.email,
-            "full_name": "Duplicate User",
+            "name": "Duplicate User",
             "password": _TPW,
         }
         response = client.post("/api/auth/register", json=payload)
@@ -39,7 +39,7 @@ class TestRegisterErrors:
         """A password without uppercase letters should be rejected."""
         payload = {
             "email": "weakpwd@example.com",
-            "full_name": "Weak Pwd",
+            "name": "Weak Pwd",
             "password": "nocapital123!",
         }
         response = client.post("/api/auth/register", json=payload)
@@ -52,7 +52,7 @@ class TestRegisterErrors:
         """A password shorter than 8 characters should be rejected."""
         payload = {
             "email": "shortpwd@example.com",
-            "full_name": "Short Pwd",
+            "name": "Short Pwd",
             "password": "Ab1!",
         }
         response = client.post("/api/auth/register", json=payload)
@@ -65,7 +65,7 @@ class TestRegisterErrors:
         """A password without special characters should be rejected."""
         payload = {
             "email": "nospecial@example.com",
-            "full_name": "No Special",
+            "name": "No Special",
             "password": "NoSpecialChar123",
         }
         response = client.post("/api/auth/register", json=payload)
@@ -77,7 +77,7 @@ class TestRegisterErrors:
         """A password without digits should be rejected."""
         payload = {
             "email": "nodigit@example.com",
-            "full_name": "No Digit",
+            "name": "No Digit",
             "password": "NoDigitHere!",
         }
         response = client.post("/api/auth/register", json=payload)

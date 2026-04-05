@@ -16,6 +16,7 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, JSON, Integer
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.dialects.postgresql import JSONB
 
 # Set test environment variables BEFORE importing app modules
@@ -42,6 +43,7 @@ def _patch_pg_types_for_sqlite():
     import re
     from sqlalchemy import BigInteger as _BigInt
     from sqlalchemy.sql import text
+    from sqlalchemy.schema import DefaultClause
     for table in Base.metadata.tables.values():
         for column in table.columns:
             # JSONB -> JSON
@@ -55,10 +57,10 @@ def _patch_pg_types_for_sqlite():
                 default_text = str(column.server_default.arg) if hasattr(column.server_default, 'arg') else ""
                 if "::jsonb" in default_text:
                     clean = re.sub(r"::jsonb", "", default_text).strip("'")
-                    column.server_default = text(f"'{clean}'")
+                    column.server_default = DefaultClause(text(f"'{clean}'"))
                 elif "::json" in default_text:
                     clean = re.sub(r"::json", "", default_text).strip("'")
-                    column.server_default = text(f"'{clean}'")
+                    column.server_default = DefaultClause(text(f"'{clean}'"))
 
 # ---------------------------------------------------------------------------
 # Shared test passwords (not real credentials — used only in test fixtures)
@@ -71,11 +73,12 @@ ENTERPRISE_PW = "Enterprise123!"        # noqa: S105
 # ---------------------------------------------------------------------------
 # Test database (SQLite in-memory)
 # ---------------------------------------------------------------------------
-SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///./test.db"
+SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///:memory:"
 
 engine = create_engine(
     SQLALCHEMY_TEST_DATABASE_URL,
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -89,6 +92,7 @@ def setup_database():
     if not _pg_types_patched:
         _patch_pg_types_for_sqlite()
         _pg_types_patched = True
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
